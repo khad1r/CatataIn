@@ -65,11 +65,13 @@ docker build -t catetin .
 docker run --rm catetin
 ```
 
-### 2. GitHub Actions (Automated Cloud Builds)
-Whenever you push to GitHub, `.github/workflows/ci.yml` automatically:
-1. Compiles the native `catetin.exe` on a `windows-latest` cloud runner using native MSVC.
-2. Uploads the compiled standalone binary as a downloadable GitHub Actions artifact.
-3. Verifies WebAssembly compatibility on `ubuntu-latest`.
+### 2. GitHub Actions (Automated Cloud Builds & Semantic Release)
+Matches the release pipeline:
+1. **Pull Requests (`test-build.yml`):** Runs on PRs to `main`, `master`, and `development` to verify unit tests and test production compilation.
+2. **Push to `main` / `master` (`release.yml`):**
+   * Automatically builds the native Windows `catetin.exe` on `windows-latest`.
+   * Packages it into `dist/catetin-windows-x64.zip`.
+   * Runs **Semantic Release** (`.releaserc.json`), generating automated changelogs, tagging versions (`v1.0.0`), and attaching `catetin-windows-x64.zip` directly to the GitHub Release!
 
 ---
 
