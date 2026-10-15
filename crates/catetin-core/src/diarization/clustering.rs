@@ -89,28 +89,12 @@ impl OnlineSpeakerClusterer {
     }
 }
 
-/// Compute cosine similarity between two vectors: (A . B) / (||A|| * ||B||)
+/// Compute cosine similarity between normalized unit vectors: A . B
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
-    }
-
-    let denominator = (norm_a * norm_b).sqrt();
-    if denominator < 1e-8 {
-        0.0
-    } else {
-        (dot / denominator).clamp(-1.0, 1.0)
-    }
+    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum::<f32>().clamp(-1.0, 1.0)
 }
 
 /// L2 normalize a vector to unit length

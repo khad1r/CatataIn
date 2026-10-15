@@ -1,160 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
-use std::sync::{OnceLock, RwLock};
 
-/// A parsed locale file containing translation key-value mappings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocaleBundle {
-    pub code: String,
-    pub name: String,
-    pub strings: HashMap<String, String>,
-}
-
-/// The global multi-language translation catalog.
-#[derive(Debug)]
-pub struct LocaleCatalog {
-    bundles: HashMap<String, LocaleBundle>,
-}
-
-impl Default for LocaleCatalog {
-    fn default() -> Self {
-        let mut catalog = Self {
-            bundles: HashMap::new(),
-        };
-        catalog.load_builtin();
-        catalog
-    }
-}
-
-impl LocaleCatalog {
-    /// Load built-in embedded locales (Bahasa Indonesia & English)
-    pub fn load_builtin(&mut self) {
-        let id_json = include_str!("../../locales/id.json");
-        let en_json = include_str!("../../locales/en.json");
-
-        if let Ok(bundle) = serde_json::from_str::<LocaleBundle>(id_json) {
-            self.bundles.insert(bundle.code.to_lowercase(), bundle);
-        }
-        if let Ok(bundle) = serde_json::from_str::<LocaleBundle>(en_json) {
-            self.bundles.insert(bundle.code.to_lowercase(), bundle);
-        }
-    }
-
-    /// Register a newly parsed locale bundle into the catalog
-    pub fn register(&mut self, bundle: LocaleBundle) {
-        self.bundles.insert(bundle.code.to_lowercase(), bundle);
-    }
-
-    /// Auto-discover and load any custom locale `.json` files from disk.
-    ///
-    /// Contributors and users can add new languages simply by dropping a `.json`
-    /// file into `./locales/` or the application's config folder.
-    pub fn auto_load_from_dir<P: AsRef<Path>>(&mut self, dir: P) -> usize {
-        let path = dir.as_ref();
-        if !path.exists() || !path.is_dir() {
-            return 0;
-        }
-
-        let mut loaded_count = 0;
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let entry_path = entry.path();
-                if entry_path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = std::fs::read_to_string(&entry_path) {
-                        if let Ok(bundle) = serde_json::from_str::<LocaleBundle>(&content) {
-                            self.register(bundle);
-                            loaded_count += 1;
-                        }
-                    }
-                }
-            }
-        }
-        loaded_count
-    }
-
-    /// Translate a key for a given language code with multi-tier fallback:
-    /// Requested Language -> Indonesian -> English -> Raw Key
-    pub fn get(&self, lang_code: &str, key: &str) -> String {
-        let target = lang_code.to_lowercase();
-
-        // 1. Target language lookup
-        if let Some(bundle) = self.bundles.get(&target) {
-            if let Some(val) = bundle.strings.get(key) {
-                return val.clone();
-            }
-        }
-
-        // 2. Indonesian fallback
-        if target != "id" {
-            if let Some(bundle) = self.bundles.get("id") {
-                if let Some(val) = bundle.strings.get(key) {
-                    return val.clone();
-                }
-            }
-        }
-
-        // 3. English fallback
-        if target != "en" {
-            if let Some(bundle) = self.bundles.get("en") {
-                if let Some(val) = bundle.strings.get(key) {
-                    return val.clone();
-                }
-            }
-        }
-
-        // 4. Return the key itself as safe fallback
-        key.to_string()
-    }
-
-    /// List all registered language codes
-    pub fn available_languages(&self) -> Vec<(&str, &str)> {
-        self.bundles
-            .values()
-            .map(|b| (b.code.as_str(), b.name.as_str()))
-            .collect()
-    }
-}
-
-/// Global lazy-initialized locale catalog
-static CATALOG: OnceLock<RwLock<LocaleCatalog>> = OnceLock::new();
-
-fn global_catalog() -> &'static RwLock<LocaleCatalog> {
-    CATALOG.get_or_init(|| {
-        let mut cat = LocaleCatalog::default();
-        // Auto-load from local ./locales/ directory if present
-        cat.auto_load_from_dir("locales");
-        cat.auto_load_from_dir("../locales");
-        cat.auto_load_from_dir("crates/catetin-core/locales");
-        // Auto-load from system AppData directory
-        cat.auto_load_from_dir(crate::config::default_app_dir().join("locales"));
-        RwLock::new(cat)
-    })
-}
-
-/// Explicitly trigger auto-loading locales from a specific folder
-pub fn auto_load_locales<P: AsRef<Path>>(dir: P) -> usize {
-    if let Ok(mut lock) = global_catalog().write() {
-        lock.auto_load_from_dir(dir)
-    } else {
-        0
-    }
-}
-
-/// Supported user interface and speech recognition prompt languages.
+// ponytail: compile-time static string mapping instead of dynamic JSON file discovery & runtime HashMap.
+// Ceiling: Indonesian and English static strings. Upgrade path: reintroduce dynamic locale catalog if external plugin translation files are requested.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UiLanguage {
-    /// Bahasa Indonesia (default: "Tolong catetin rapat ini ya!")
     #[serde(alias = "id", alias = "indonesian", alias = "in")]
     Indonesian,
-
-    /// English
     #[serde(alias = "en", alias = "english")]
     English,
-
-    /// Dynamically discovered contributor language (e.g. "es", "jv", "ja", "de")
     Custom(String),
 }
 
@@ -165,17 +20,14 @@ impl Default for UiLanguage {
 }
 
 impl UiLanguage {
-    /// Parse language from ISO 639-1 code or common name.
     pub fn from_code(code: &str) -> Self {
-        let clean = code.trim().to_lowercase();
-        match clean.as_str() {
+        match code.trim().to_lowercase().as_str() {
             "id" | "indonesian" | "in" => UiLanguage::Indonesian,
             "en" | "english" => UiLanguage::English,
             custom => UiLanguage::Custom(custom.to_string()),
         }
     }
 
-    /// Two-letter ISO language code (e.g. "id", "en", "es").
     pub fn code(&self) -> &str {
         match self {
             UiLanguage::Indonesian => "id",
@@ -184,35 +36,25 @@ impl UiLanguage {
         }
     }
 
-    /// Display name of the language.
-    pub fn display_name(&self) -> String {
-        if let Ok(lock) = global_catalog().read() {
-            if let Some(bundle) = lock.bundles.get(self.code()) {
-                return bundle.name.clone();
-            }
-        }
+    pub fn display_name(&self) -> &str {
         match self {
-            UiLanguage::Indonesian => "Bahasa Indonesia".to_string(),
-            UiLanguage::English => "English".to_string(),
-            UiLanguage::Custom(code) => code.to_uppercase(),
+            UiLanguage::Indonesian => "Bahasa Indonesia",
+            UiLanguage::English => "English",
+            UiLanguage::Custom(code) => code.as_str(),
         }
     }
 
-    /// Translate a string key into the current language.
-    pub fn text(&self, key: &str) -> String {
-        if let Ok(lock) = global_catalog().read() {
-            lock.get(self.code(), key)
-        } else {
-            key.to_string()
+    pub fn text(&self, key: &str) -> &'static str {
+        match self {
+            UiLanguage::Indonesian => match_id(key),
+            _ => match_en(key),
         }
     }
 
-    /// Format a string with arguments {0}, {1}, etc.
     pub fn text_fmt(&self, key: &str, args: &[&str]) -> String {
-        let mut result = self.text(key);
+        let mut result = self.text(key).to_string();
         for (i, arg) in args.iter().enumerate() {
-            let placeholder = format!("{{{}}}", i);
-            result = result.replace(&placeholder, arg);
+            result = result.replace(&format!("{{{}}}", i), arg);
         }
         result
     }
@@ -224,29 +66,96 @@ impl fmt::Display for UiLanguage {
     }
 }
 
-/// Global translate lookup function
-pub fn t(lang: &UiLanguage, key: &str) -> String {
-    lang.text(key)
-}
-
-/// Helper function to format numbered speaker labels according to language.
-/// e.g. "Pembicara 1" (id) vs "Speaker 1" (en).
 pub fn format_speaker_label(speaker_num: u32, lang: &UiLanguage) -> String {
-    let prefix = lang.text("speaker.prefix");
-    format!("{} {}", prefix, speaker_num)
+    format!("{} {}", lang.text("speaker.prefix"), speaker_num)
 }
 
-/// Macro for ergonomic translation lookups:
-/// `tr!(lang, "speaker.you")` -> "Anda"
-/// `tr!(lang, "speaker.format", 1)` -> "Pembicara 1"
-#[macro_export]
-macro_rules! tr {
-    ($lang:expr, $key:expr) => {
-        $lang.text($key)
-    };
-    ($lang:expr, $key:expr, $($arg:expr),+) => {
-        $lang.text_fmt($key, &[$(&$arg.to_string()),+])
-    };
+fn match_id(key: &str) -> &'static str {
+    match key {
+        "app.name" => "Catetin",
+        "app.tagline" => "Tolong catetin rapat ini ya!",
+        "app.subtitle" => "Mesin Transkripsi & Diarisasi Rapat Offline",
+        "speaker.you" => "Anda",
+        "speaker.prefix" => "Pembicara",
+        "speaker.unknown" => "Tidak Diketahui",
+        "status.ready" => "Siap merekam rapat",
+        "status.listening" => "Mendengarkan...",
+        "status.processing" => "Mentranskripsi...",
+        "status.paused" => "Dijeda",
+        "status.stopped" => "Selesai",
+        "prompt.press_quit" => "Tekan 'm' ganti mode langsung, 'l' ganti bahasa, Ctrl+C selesai",
+        "prompt.downloading_model" => "Mengunduh model suara offline...",
+        "prompt.model_ready" => "Model suara siap digunakan",
+        "prompt.saving_transcript" => "Menyimpan catatan rapat...",
+        "prompt.saved_success" => "Catatan rapat berhasil disimpan ke: ",
+        "label.microphone" => "Mikrofon (Dekat)",
+        "label.loopback" => "Audio Sistem (Jauh/Speaker)",
+        "label.mode_online" => "Mode Rapat Online (Zoom/Google Meet/Teams)",
+        "label.mode_in_person" => "Mode Tatap Muka (Satu Mikrofon Meja)",
+        "label.mode_hybrid" => "Mode Hibrida (Dengan Profil Suara)",
+        "label.language" => "Bahasa",
+        "label.mode" => "Mode",
+        "label.model_tier" => "Tingkat Model",
+        "label.log_file" => "Berkas Log",
+        "label.status" => "Status",
+        "label.tip" => "Petunjuk",
+        "cli.usage" => "Penggunaan:",
+        "cli.options" => "Opsi:",
+        "cli.help_config" => "Buka wizard konfigurasi interaktif atau tentukan berkas JSON",
+        "cli.help_verbose" => "Tampilkan log debug ke stderr selain ke berkas log",
+        "wizard.title" => "Pengaturan Konfigurasi Interaktif",
+        "wizard.step_lang" => "1. Pilih Bahasa Antarmuka (UI Language):",
+        "wizard.step_mode" => "2. Pilih Mode Diarisasi (Diarization Mode):",
+        "wizard.step_model" => "3. Pilih Tingkat Model Suara (Whisper Model Tier):",
+        "wizard.step_verbose" => "4. Tampilkan log diagnostik ke terminal saat merekam? (y/N):",
+        "wizard.prompt_choice" => "Masukkan pilihan",
+        "wizard.saved_success" => "Konfigurasi berhasil disimpan ke:",
+        _ => match_en(key),
+    }
+}
+
+fn match_en(key: &str) -> &'static str {
+    match key {
+        "app.name" => "Catetin",
+        "app.tagline" => "Please take notes for this meeting!",
+        "app.subtitle" => "Offline Live Meeting Transcriber & Diarizer",
+        "speaker.you" => "You",
+        "speaker.prefix" => "Speaker",
+        "speaker.unknown" => "Unknown",
+        "status.ready" => "Ready to record meeting",
+        "status.listening" => "Listening...",
+        "status.processing" => "Transcribing...",
+        "status.paused" => "Paused",
+        "status.stopped" => "Stopped",
+        "prompt.press_quit" => "Press 'm' to toggle mode on the fly, 'l' for lang, Ctrl+C to stop",
+        "prompt.downloading_model" => "Downloading offline voice model...",
+        "prompt.model_ready" => "Voice model ready",
+        "prompt.saving_transcript" => "Saving meeting transcript...",
+        "prompt.saved_success" => "Meeting transcript saved to: ",
+        "label.microphone" => "Microphone (Near-end)",
+        "label.loopback" => "System Audio (Far-end/Loopback)",
+        "label.mode_online" => "Online Meeting Mode (Zoom/Google Meet/Teams)",
+        "label.mode_in_person" => "In-Person Mode (Round-Table Single Mic)",
+        "label.mode_hybrid" => "Hybrid Mode (With Enrolled Voiceprint)",
+        "label.language" => "Language",
+        "label.mode" => "Mode",
+        "label.model_tier" => "Model Tier",
+        "label.log_file" => "Log File",
+        "label.status" => "Status",
+        "label.tip" => "Tip",
+        "cli.usage" => "Usage:",
+        "cli.options" => "Options:",
+        "cli.help_config" => "Launch interactive configuration wizard or specify JSON file",
+        "cli.help_verbose" => "Print debug logs to stderr alongside log file",
+        "wizard.title" => "Interactive Configuration Setup Wizard",
+        "wizard.step_lang" => "1. Select UI Language:",
+        "wizard.step_mode" => "2. Select Diarization Mode:",
+        "wizard.step_model" => "3. Select Whisper Voice Model Tier:",
+        "wizard.step_verbose" => "4. Print diagnostic logs to terminal during recording? (y/N):",
+        "wizard.prompt_choice" => "Enter choice",
+        "wizard.saved_success" => "Configuration successfully saved to:",
+        _ => "Unknown",
+    }
 }
 
 #[cfg(test)]
@@ -266,36 +175,5 @@ mod tests {
 
         assert_eq!(format_speaker_label(1, &id), "Pembicara 1");
         assert_eq!(format_speaker_label(2, &en), "Speaker 2");
-    }
-
-    #[test]
-    fn test_custom_contributor_bundle_auto_load() {
-        let mut catalog = LocaleCatalog::default();
-        let es_bundle = LocaleBundle {
-            code: "es".to_string(),
-            name: "Español".to_string(),
-            strings: HashMap::from([
-                ("app.tagline".to_string(), "¡Por favor toma notas!".to_string()),
-                ("speaker.you".to_string(), "Tú".to_string()),
-                ("speaker.prefix".to_string(), "Hablante".to_string()),
-            ]),
-        };
-
-        catalog.register(es_bundle);
-
-        assert_eq!(catalog.get("es", "speaker.you"), "Tú");
-        assert_eq!(catalog.get("es", "app.tagline"), "¡Por favor toma notas!");
-        // Fallback test: key not in Spanish -> falls back to Indonesian/English
-        assert_eq!(catalog.get("es", "status.ready"), "Siap merekam rapat");
-    }
-
-    #[test]
-    fn test_dynamic_language_parsing() {
-        let es = UiLanguage::from_code("es");
-        assert_eq!(es.code(), "es");
-        match es {
-            UiLanguage::Custom(c) => assert_eq!(c, "es"),
-            _ => panic!("Expected UiLanguage::Custom"),
-        }
     }
 }

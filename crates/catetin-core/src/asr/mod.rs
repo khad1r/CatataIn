@@ -9,6 +9,7 @@ pub trait SpeechRecognizer: Send + Sync {
     fn language(&self) -> &str;
 }
 
+
 /// Lightweight testing / mock speech recognizer for verification without downloading weights
 #[derive(Debug, Clone)]
 pub struct MockRecognizer {

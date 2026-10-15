@@ -1,7 +1,9 @@
-pub mod aec;
 pub mod capture;
 pub mod resampler;
 
-pub use aec::EchoCanceller;
-pub use capture::{AudioPacket, DualAudioCapture, STANDARD_SAMPLE_RATE};
+pub use capture::{
+    list_input_devices, list_output_devices, AudioPacket, DualAudioCapture, STANDARD_SAMPLE_RATE,
+};
 pub use resampler::AudioResampler;
+
+

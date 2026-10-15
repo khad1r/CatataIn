@@ -15,10 +15,10 @@ pub mod events {
         /// Dynamically localized into Indonesian, English, or any contributor-added language.
         pub fn to_localized_string(&self, lang: &UiLanguage) -> String {
             match self {
-                SpeakerId::LocalUser => lang.text("speaker.you"),
+                SpeakerId::LocalUser => lang.text("speaker.you").to_string(),
                 SpeakerId::Remote(id) => crate::i18n::format_speaker_label(*id, lang),
                 SpeakerId::InPerson(id) => crate::i18n::format_speaker_label(*id, lang),
-                SpeakerId::Unknown => lang.text("speaker.unknown"),
+                SpeakerId::Unknown => lang.text("speaker.unknown").to_string(),
             }
         }
     }
@@ -50,8 +50,8 @@ pub mod config;
 pub mod diarization;
 pub mod i18n;
 pub mod logging;
-pub mod model;
 pub mod pipeline;
+
 
 pub use config::AppConfig;
 pub use i18n::UiLanguage;

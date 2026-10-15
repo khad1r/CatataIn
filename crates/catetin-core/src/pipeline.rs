@@ -2,9 +2,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
+
 
 use crate::asr::SpeechRecognizer;
 use crate::audio::DualAudioCapture;
@@ -86,15 +87,15 @@ impl Drop for PipelineHandle {
 
 /// Headless real-time pipeline connecting:
 /// WASAPI Capture -> NLMS AEC -> VAD Speech Segmentation -> Speaker Diarization -> Speech Recognition
-pub struct CatetinPipeline<R: SpeechRecognizer> {
-    recognizer: R,
+pub struct CatetinPipeline {
+    recognizer: Box<dyn SpeechRecognizer>,
     clusterer: OnlineSpeakerClusterer,
     mode: DiarizationMode,
     enrolled_voiceprint: Option<Vec<f32>>,
 }
 
-impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
-    pub fn new(recognizer: R) -> Self {
+impl CatetinPipeline {
+    pub fn new(recognizer: Box<dyn SpeechRecognizer>) -> Self {
         Self {
             recognizer,
             clusterer: OnlineSpeakerClusterer::default(),
@@ -116,12 +117,13 @@ impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
     }
 
     /// Start processing audio capture in a dedicated background worker thread.
-    /// Live transcript events are streamed to the provided tokio channel sender.
+    // ponytail: std::sync::mpsc instead of async tokio channel. Ceiling: synchronous thread-based event dispatch. Upgrade path: add tokio wrapper only if embedding in an async GUI framework like Tauri.
     pub fn start(
         mut self,
         capture: DualAudioCapture,
-        event_sender: UnboundedSender<TranscriptEvent>,
+        event_sender: Sender<TranscriptEvent>,
     ) -> Result<PipelineHandle> {
+
         let is_running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&is_running);
 

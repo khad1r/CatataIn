@@ -17,5 +17,4 @@ whisper = ["catetin-core/whisper"]
 catetin-core = { path = "../catetin-core", default-features = false }
 anyhow.workspace = true
 log.workspace = true
-env_logger.workspace = true
-tokio = { workspace = true, features = ["full"] }
+serde_json.workspace = true

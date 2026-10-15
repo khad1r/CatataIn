@@ -16,10 +16,6 @@ pub mod urls {
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
     pub const WHISPER_MEDIUM: &str =
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin";
-    pub const SILERO_VAD: &str =
-        "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
-    pub const CAM_PLUS_VOICEPRINT: &str =
-        "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common/resolve/master/campplus_cn_common.onnx";
 }
 
 /// Standard filenames for cached models on local disk.
@@ -28,9 +24,8 @@ pub mod filenames {
     pub const WHISPER_BASE: &str = "ggml-base.bin";
     pub const WHISPER_SMALL: &str = "ggml-small.bin";
     pub const WHISPER_MEDIUM: &str = "ggml-medium.bin";
-    pub const SILERO_VAD: &str = "silero_vad.onnx";
-    pub const CAM_PLUS_VOICEPRINT: &str = "campplus.onnx";
 }
+
 
 /// Centralized application configuration.
 /// Can be loaded from and saved to a JSON configuration file.
@@ -63,6 +58,42 @@ pub struct AppConfig {
 
     /// Minimum speaker clustering similarity threshold (default: 0.72)
     pub speaker_threshold: f32,
+
+    /// Specific audio input device name (microphone), None for system default
+    #[serde(default)]
+    pub input_device_name: Option<String>,
+
+    /// Specific audio output device name (system loopback), None for system default
+    #[serde(default)]
+    pub output_device_name: Option<String>,
+
+    /// Enable split-screen AI meeting assistant pane (Phase 5)
+    #[serde(default = "default_true")]
+    pub show_assistant: bool,
+
+    /// LLM API endpoint URL (default: "http://localhost:11434/v1" for Ollama)
+    #[serde(default = "default_assistant_url")]
+    pub assistant_url: String,
+
+    /// LLM model name (default: "llama3.2:1b")
+    #[serde(default = "default_assistant_model")]
+    pub assistant_model: String,
+
+    /// Optional API key for cloud LLMs (Groq, OpenAI, Gemini, DeepSeek)
+    #[serde(default)]
+    pub assistant_api_key: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_assistant_url() -> String {
+    "http://localhost:11434/v1".to_string()
+}
+
+fn default_assistant_model() -> String {
+    "llama3.2:1b".to_string()
 }
 
 impl Default for AppConfig {
@@ -78,9 +109,17 @@ impl Default for AppConfig {
             model_dir: base_dir.join("models"),
             log_dir: base_dir.join("logs"),
             speaker_threshold: 0.72,
+            input_device_name: None,
+            output_device_name: None,
+            show_assistant: true,
+            assistant_url: default_assistant_url(),
+            assistant_model: default_assistant_model(),
+            assistant_api_key: None,
         }
     }
 }
+
+
 
 impl AppConfig {
     /// Standard location for config file: `%APPDATA%\catetin\config.json` or `~/.catetin/config.json`
