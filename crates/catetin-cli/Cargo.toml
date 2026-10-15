@@ -9,8 +9,12 @@ license.workspace = true
 name = "catetin"
 path = "src/main.rs"
 
+[features]
+default = ["whisper"]
+whisper = ["catetin-core/whisper"]
+
 [dependencies]
-catetin-core = { path = "../catetin-core" }
+catetin-core = { path = "../catetin-core", default-features = false }
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
