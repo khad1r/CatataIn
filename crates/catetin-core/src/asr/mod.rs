@@ -96,16 +96,10 @@ pub mod whisper_backend {
                 .full(params, samples)
                 .map_err(|e| anyhow::anyhow!("Failed to run Whisper inference: {:?}", e))?;
 
-            let num_segments = state
-                .full_n_segments()
-                .map_err(|e| anyhow::anyhow!("Failed to get segment count: {:?}", e))?;
-
             let mut text = String::new();
-            for i in 0..num_segments {
-                if let Ok(segment) = state.full_get_segment_text(i) {
-                    text.push_str(&segment);
-                    text.push(' ');
-                }
+            for segment in state.as_iter() {
+                text.push_str(&segment.to_string());
+                text.push(' ');
             }
 
             Ok(text.trim().to_string())
