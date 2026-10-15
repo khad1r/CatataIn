@@ -8,6 +8,7 @@ RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         cmake \
+        make \
         clang \
         libclang-dev \
         llvm \
@@ -17,7 +18,8 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup target add wasm32-unknown-unknown
+RUN rustup component add rustfmt \
+    && rustup target add wasm32-unknown-unknown
 
 WORKDIR /workspace
 
@@ -34,7 +36,16 @@ RUN cargo test --workspace --no-default-features \
     && cargo build --release -p catetin-cli
 
 # ============================================================
-# Stage 2: Minimal Runtime Container (Self-contained, ~35 MB)
+# Stage 2: Host File Exporter
+# Usage: docker build --target export --output dist/ .
+# Extracts the compiled executable directly to your host machine!
+# ============================================================
+FROM scratch AS export
+COPY --from=builder /workspace/target/release/catetin /catetin
+
+# ============================================================
+# Stage 3: Minimal Runtime Container (Self-contained, ~35 MB)
+# Default stage for `docker run --rm -it catetin`
 # ============================================================
 FROM debian:bookworm-slim AS runtime
 
@@ -48,11 +59,3 @@ WORKDIR /app
 COPY --from=builder /workspace/target/release/catetin /usr/local/bin/catetin
 
 ENTRYPOINT ["catetin"]
-
-# ============================================================
-# Stage 3: Host File Exporter
-# Usage: docker build --target export --output dist/ .
-# Extracts the compiled executable directly to your host machine!
-# ============================================================
-FROM scratch AS export
-COPY --from=builder /workspace/target/release/catetin /catetin

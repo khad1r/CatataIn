@@ -1,4 +1,5 @@
 /target
+/dist
 /models/*.bin
 /models/*.onnx
 *.wav
