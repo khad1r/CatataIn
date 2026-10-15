@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -31,12 +31,45 @@ pub enum DiarizationMode {
     Hybrid,
 }
 
+impl DiarizationMode {
+    /// Cycle to the next mode on the fly without restarting the engine
+    pub fn next(&self) -> Self {
+        match self {
+            DiarizationMode::OnlineMeeting => DiarizationMode::InPerson,
+            DiarizationMode::InPerson => DiarizationMode::Hybrid,
+            DiarizationMode::Hybrid => DiarizationMode::OnlineMeeting,
+        }
+    }
+}
+
 pub struct PipelineHandle {
     is_running: Arc<AtomicBool>,
+    mode: Arc<RwLock<DiarizationMode>>,
     thread_handle: Option<JoinHandle<()>>,
 }
 
 impl PipelineHandle {
+    /// Switch diarization mode on the fly during an active meeting session.
+    /// Takes effect instantly on the next audio packet without restarting audio or models.
+    pub fn set_mode(&self, new_mode: DiarizationMode) {
+        if let Ok(mut lock) = self.mode.write() {
+            log::info!("Diarization mode switched on the fly: {:?} -> {:?}", *lock, new_mode);
+            *lock = new_mode;
+        }
+    }
+
+    /// Read the currently active diarization mode.
+    pub fn current_mode(&self) -> DiarizationMode {
+        self.mode.read().map(|m| *m).unwrap_or_default()
+    }
+
+    /// Cycle to the next diarization mode on the fly.
+    pub fn toggle_mode(&self) -> DiarizationMode {
+        let next = self.current_mode().next();
+        self.set_mode(next);
+        next
+    }
+
     pub fn stop(&mut self) {
         self.is_running.store(false, Ordering::SeqCst);
         if let Some(handle) = self.thread_handle.take() {
@@ -70,7 +103,7 @@ impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
         }
     }
 
-    /// Set the diarization mode (OnlineMeeting, InPerson / FullMic, or Hybrid)
+    /// Set the initial diarization mode (OnlineMeeting, InPerson / FullMic, or Hybrid)
     pub fn with_mode(mut self, mode: DiarizationMode) -> Self {
         self.mode = mode;
         self
@@ -92,23 +125,30 @@ impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
         let is_running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&is_running);
 
+        let mode_arc = Arc::new(RwLock::new(self.mode));
+        let mode_clone = Arc::clone(&mode_arc);
+
         let thread_handle = std::thread::spawn(move || {
             let mut mic_segmenter = SpeechSegmenter::new(16_000);
             let mut loopback_segmenter = SpeechSegmenter::new(16_000);
 
             while running_clone.load(Ordering::SeqCst) {
                 let mut had_audio = false;
+                let active_mode = mode_clone.read().map(|m| *m).unwrap_or(DiarizationMode::OnlineMeeting);
 
                 // 1. Process Near-End User Microphone
                 while let Ok(packet) = capture.mic_receiver.try_recv() {
                     had_audio = true;
                     if let Some(utterance) = mic_segmenter.feed(&packet.samples) {
-                        let speaker = match self.mode {
+                        let speaker = match active_mode {
                             DiarizationMode::OnlineMeeting => SpeakerId::LocalUser,
                             DiarizationMode::InPerson => {
                                 // Full Mic mode: acoustically cluster all in-room speakers
                                 let voiceprint = compute_voiceprint_features(&utterance);
-                                self.clusterer.identify_or_register(&voiceprint)
+                                match self.clusterer.identify_or_register(&voiceprint) {
+                                    SpeakerId::Remote(id) => SpeakerId::InPerson(id),
+                                    other => other,
+                                }
                             }
                             DiarizationMode::Hybrid => {
                                 let voiceprint = compute_voiceprint_features(&utterance);
@@ -179,6 +219,7 @@ impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
 
         Ok(PipelineHandle {
             is_running,
+            mode: mode_arc,
             thread_handle: Some(thread_handle),
         })
     }
