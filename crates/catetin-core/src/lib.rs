@@ -15,10 +15,10 @@ pub mod events {
         /// Dynamically localized into Indonesian, English, or any contributor-added language.
         pub fn to_localized_string(&self, lang: &UiLanguage) -> String {
             match self {
-                SpeakerId::LocalUser => lang.text("speaker.you").to_string(),
+                SpeakerId::LocalUser => lang.text("speaker.you"),
                 SpeakerId::Remote(id) => crate::i18n::format_speaker_label(*id, lang),
                 SpeakerId::InPerson(id) => crate::i18n::format_speaker_label(*id, lang),
-                SpeakerId::Unknown => lang.text("speaker.unknown").to_string(),
+                SpeakerId::Unknown => lang.text("speaker.unknown"),
             }
         }
     }
