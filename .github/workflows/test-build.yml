@@ -1,0 +1,26 @@
+name: Test & Build
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+      - development
+
+jobs:
+  test-and-build:
+    name: Lint, Check & Build
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Core Engine Unit Tests
+        run: cargo test --workspace --no-default-features
+
+      - name: Test production CLI build
+        run: cargo build --release -p catetin-cli
