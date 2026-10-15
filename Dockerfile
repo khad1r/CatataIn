@@ -1,30 +1,33 @@
-# Multi-stage Docker container for building & testing Catetin with zero host bloat
-FROM rust:1.85-bookworm AS builder
+# Secure, minimal Rust build container for Catetin
+FROM rust:1-slim-bookworm AS builder
 
-# Install audio dependencies, clang, and cross-compilation tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake \
-    clang \
-    libclang-dev \
-    llvm \
-    ninja-build \
-    libasound2-dev \
-    pkg-config \
-    mingw-w64 \
+# 1. Apply latest security patches to resolve base image CVEs
+# 2. Install only essential build tools (Audio headers, Clang/LLVM, CMake, Ninja)
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+        cmake \
+        clang \
+        libclang-dev \
+        llvm \
+        ninja-build \
+        libasound2-dev \
+        pkg-config \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Add targets for Windows cross-compilation and WebAssembly
-RUN rustup target add x86_64-pc-windows-gnu wasm32-unknown-unknown
+# Add WebAssembly target
+RUN rustup target add wasm32-unknown-unknown
 
 WORKDIR /workspace
 
-# Copy workspace manifests
+# Copy manifests first for efficient Docker layer caching
 COPY Cargo.toml ./
 COPY crates/catetin-core/Cargo.toml ./crates/catetin-core/
 COPY crates/catetin-cli/Cargo.toml ./crates/catetin-cli/
 
-# Copy source tree
+# Copy workspace source files
 COPY crates ./crates
 
-# Build & test by default
+# Default: execute core tests in an isolated, secure environment
 CMD ["cargo", "test", "--workspace", "--no-default-features"]
