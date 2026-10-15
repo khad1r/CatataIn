@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -9,6 +10,26 @@ use crate::asr::SpeechRecognizer;
 use crate::audio::DualAudioCapture;
 use crate::diarization::{OnlineSpeakerClusterer, SpeechSegmenter};
 use crate::events::{SpeakerId, TranscriptEvent};
+
+/// Operating mode for speaker attribution
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DiarizationMode {
+    /// Standard Online Meeting (Zoom, Google Meet, Teams):
+    /// Audio from the near-end microphone is deterministically [You].
+    /// Audio from far-end loopback speakers is clustered into [Speaker 1], [Speaker 2], etc.
+    #[default]
+    OnlineMeeting,
+
+    /// In-Person / Full Mic (Round-table conference room):
+    /// Multiple people sit in the same room talking into the same laptop/table microphone.
+    /// The microphone stream is acoustically clustered into [Speaker 1], [Speaker 2], etc.
+    InPerson,
+
+    /// Hybrid Mode:
+    /// Uses the local user's enrolled voiceprint. When your voice is detected on the mic,
+    /// it is labeled [You]; other voices near the microphone are clustered as [Speaker 1, 2...].
+    Hybrid,
+}
 
 pub struct PipelineHandle {
     is_running: Arc<AtomicBool>,
@@ -35,6 +56,8 @@ impl Drop for PipelineHandle {
 pub struct CatetinPipeline<R: SpeechRecognizer> {
     recognizer: R,
     clusterer: OnlineSpeakerClusterer,
+    mode: DiarizationMode,
+    enrolled_voiceprint: Option<Vec<f32>>,
 }
 
 impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
@@ -42,7 +65,21 @@ impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
         Self {
             recognizer,
             clusterer: OnlineSpeakerClusterer::default(),
+            mode: DiarizationMode::default(),
+            enrolled_voiceprint: None,
         }
+    }
+
+    /// Set the diarization mode (OnlineMeeting, InPerson / FullMic, or Hybrid)
+    pub fn with_mode(mut self, mode: DiarizationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Enroll the local user's voiceprint embedding for Hybrid mode
+    pub fn with_enrolled_voice(mut self, voiceprint: Vec<f32>) -> Self {
+        self.enrolled_voiceprint = Some(voiceprint);
+        self
     }
 
     /// Start processing audio capture in a dedicated background worker thread.
@@ -62,18 +99,49 @@ impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
             while running_clone.load(Ordering::SeqCst) {
                 let mut had_audio = false;
 
-                // 1. Process Near-End User Microphone (Deterministically SpeakerId::LocalUser)
+                // 1. Process Near-End User Microphone
                 while let Ok(packet) = capture.mic_receiver.try_recv() {
                     had_audio = true;
                     if let Some(utterance) = mic_segmenter.feed(&packet.samples) {
+                        let speaker = match self.mode {
+                            DiarizationMode::OnlineMeeting => SpeakerId::LocalUser,
+                            DiarizationMode::InPerson => {
+                                // Full Mic mode: acoustically cluster all in-room speakers
+                                let voiceprint = compute_voiceprint_features(&utterance);
+                                self.clusterer.identify_or_register(&voiceprint)
+                            }
+                            DiarizationMode::Hybrid => {
+                                let voiceprint = compute_voiceprint_features(&utterance);
+                                if let Some(ref enrolled) = self.enrolled_voiceprint {
+                                    let sim = crate::diarization::clustering::cosine_similarity(
+                                        &voiceprint,
+                                        enrolled,
+                                    );
+                                    if sim >= 0.72 {
+                                        SpeakerId::LocalUser
+                                    } else {
+                                        self.clusterer.identify_or_register(&voiceprint)
+                                    }
+                                } else {
+                                    // If not yet enrolled, first speaker on mic becomes [You]
+                                    let spk = self.clusterer.identify_or_register(&voiceprint);
+                                    if spk == SpeakerId::Remote(1) {
+                                        SpeakerId::LocalUser
+                                    } else {
+                                        spk
+                                    }
+                                }
+                            }
+                        };
+
                         if let Ok(text) = self.recognizer.transcribe(&utterance) {
                             if !text.is_empty() {
                                 let event = TranscriptEvent {
                                     timestamp_ms: packet.timestamp_ms,
-                                    speaker: SpeakerId::LocalUser,
+                                    speaker,
                                     text,
                                     is_final: true,
-                                    confidence: 0.98,
+                                    confidence: 0.95,
                                 };
                                 let _ = event_sender.send(event);
                             }
@@ -85,7 +153,6 @@ impl<R: SpeechRecognizer + 'static> CatetinPipeline<R> {
                 while let Ok(packet) = capture.loopback_receiver.try_recv() {
                     had_audio = true;
                     if let Some(utterance) = loopback_segmenter.feed(&packet.samples) {
-                        // Extract spectral voiceprint energy profile for online clustering
                         let voiceprint = compute_voiceprint_features(&utterance);
                         let speaker = self.clusterer.identify_or_register(&voiceprint);
 

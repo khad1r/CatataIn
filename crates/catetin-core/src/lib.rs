@@ -5,6 +5,7 @@ pub mod events {
     pub enum SpeakerId {
         LocalUser,
         Remote(u32),
+        InPerson(u32),
         Unknown,
     }
 
@@ -13,6 +14,7 @@ pub mod events {
             match self {
                 SpeakerId::LocalUser => write!(f, "You"),
                 SpeakerId::Remote(id) => write!(f, "Speaker {}", id),
+                SpeakerId::InPerson(id) => write!(f, "Speaker {}", id),
                 SpeakerId::Unknown => write!(f, "Unknown"),
             }
         }
