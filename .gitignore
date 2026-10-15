@@ -1,0 +1,9 @@
+/target
+/models/*.bin
+/models/*.onnx
+*.wav
+foresight_mac/
+foresight_mac.dmg
+*.log
+.DS_Store
+Thumbs.db

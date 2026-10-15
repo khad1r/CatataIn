@@ -1,0 +1,17 @@
+[package]
+name = "catetin-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "catetin"
+path = "src/main.rs"
+
+[dependencies]
+catetin-core = { path = "../catetin-core" }
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+tokio = { workspace = true, features = ["full"] }

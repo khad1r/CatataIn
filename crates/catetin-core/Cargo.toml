@@ -1,0 +1,26 @@
+[package]
+name = "catetin-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["whisper"]
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+hound.workspace = true
+cpal.workspace = true
+rubato.workspace = true
+whisper-rs = { version = "0.16.0", optional = true }
+tokio = { workspace = true, features = ["sync", "rt"] }
+
+[dev-dependencies]
+env_logger.workspace = true
