@@ -17,7 +17,7 @@ fn read_line(prompt: &str) -> String {
 
 /// Interactive terminal configuration wizard.
 /// Guides the user through language, diarization mode, Whisper model, and logging,
-/// automatically saving choices to the configuration file without manual editing.
+/// automatically saving choices to the configuration file beside the binary.
 fn run_interactive_wizard(config: &mut AppConfig) -> Result<()> {
     let mut lang = config.ui_language.clone();
 
@@ -116,19 +116,14 @@ fn print_help(lang: &UiLanguage) {
     println!();
     println!("{}", lang.text("cli.options"));
     println!("  --config, -c [path]      {}", lang.text("cli.help_config"));
-    println!("  --lang, -l <code>        {}", lang.text("cli.help_lang"));
-    println!("  --mode, -m <mode>        {}", lang.text("cli.help_mode"));
-    println!("  --model <tier>           {}", lang.text("cli.help_model"));
     println!("  --verbose, -v            {}", lang.text("cli.help_verbose"));
     println!("  --help, -h               Show this help message / Tampilkan bantuan");
     println!("  --version                Show version information / Tampilkan versi");
     println!();
     println!("Examples / Contoh:");
-    println!("  catetin --config              # Jalankan wizard konfigurasi interaktif");
     println!("  catetin                       # Jalankan dengan konfigurasi tersimpan");
-    println!("  catetin --lang en             # Jalankan sementara dalam bahasa Inggris");
-    println!("  catetin --mode in-person      # Mode rapat tatap muka / conference mic");
-    println!("  catetin -c ./my-meeting.json  # Muat konfigurasi khusus");
+    println!("  catetin --config              # Jalankan wizard konfigurasi interaktif");
+    println!("  catetin -c ./my-meeting.json  # Muat konfigurasi khusus dari berkas JSON");
 }
 
 fn main() -> Result<()> {
@@ -163,40 +158,12 @@ fn main() -> Result<()> {
         return run_interactive_wizard(&mut config);
     }
 
-    // 4. Parse one-off command-line flag overrides
+    // 4. Parse simple CLI flags (--verbose, --help, --version)
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--config" | "-c" | "config" => {
                 if i + 1 < args.len() && !args[i + 1].starts_with('-') {
-                    i += 1;
-                }
-            }
-            "--lang" | "-l" => {
-                if i + 1 < args.len() {
-                    config.ui_language = UiLanguage::from_code(&args[i + 1]);
-                    i += 1;
-                }
-            }
-            "--mode" | "-m" => {
-                if i + 1 < args.len() {
-                    match args[i + 1].to_lowercase().as_str() {
-                        "in-person" | "roundtable" | "offline" => {
-                            config.diarization_mode = DiarizationMode::InPerson;
-                        }
-                        "hybrid" => {
-                            config.diarization_mode = DiarizationMode::Hybrid;
-                        }
-                        _ => {
-                            config.diarization_mode = DiarizationMode::OnlineMeeting;
-                        }
-                    }
-                    i += 1;
-                }
-            }
-            "--model" => {
-                if i + 1 < args.len() {
-                    config.model_tier = args[i + 1].clone();
                     i += 1;
                 }
             }
