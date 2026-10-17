@@ -39,6 +39,16 @@
     "wizard.step_model": "3. Select Whisper Voice Model Tier:",
     "wizard.step_verbose": "4. Print diagnostic logs to terminal during recording? (y/N):",
     "wizard.prompt_choice": "Enter choice",
-    "wizard.saved_success": "Configuration successfully saved to:"
+    "wizard.saved_success": "Configuration successfully saved to:",
+    "setup.title": "Setup & Offline Whisper Model Selection",
+    "setup.model_desc": "Choose model tier according to hardware specs & meeting requirements:",
+    "check.title": "System Readiness Check (Preflight Check)",
+    "check.models_ok": "Model weights ready for use",
+    "check.models_missing": "Model weights not found on local disk",
+    "check.audio_input_ok": "Microphone device ready",
+    "check.audio_input_missing": "No microphone device detected",
+    "check.audio_output_ok": "System audio loopback device ready",
+    "check.audio_output_missing": "No system audio loopback device detected",
+    "check.all_ready": "All dependencies ready!"
   }
 }

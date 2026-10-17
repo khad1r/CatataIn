@@ -39,6 +39,16 @@
     "wizard.step_model": "3. Pilih Tingkat Model Suara (Whisper Model Tier):",
     "wizard.step_verbose": "4. Tampilkan log diagnostik ke terminal saat merekam? (y/N):",
     "wizard.prompt_choice": "Masukkan pilihan",
-    "wizard.saved_success": "Konfigurasi berhasil disimpan ke:"
+    "wizard.saved_success": "Konfigurasi berhasil disimpan ke:",
+    "setup.title": "Setup & Pemilihan Model Whisper Offline",
+    "setup.model_desc": "Pilih tingkat model sesuai spesifikasi perangkat & kebutuhan rapat:",
+    "check.title": "Pemeriksaan Kesiapan Sistem (Preflight Check)",
+    "check.models_ok": "Bobot model siap digunakan",
+    "check.models_missing": "Bobot model belum tersedia di disk lokal",
+    "check.audio_input_ok": "Perangkat mikrofon siap",
+    "check.audio_input_missing": "Perangkat mikrofon tidak terdeteksi",
+    "check.audio_output_ok": "Perangkat loopback audio sistem siap",
+    "check.audio_output_missing": "Perangkat loopback audio sistem tidak terdeteksi",
+    "check.all_ready": "Semua dependensi siap digunakan!"
   }
 }

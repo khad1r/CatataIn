@@ -14,6 +14,8 @@ pub mod urls {
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
     pub const WHISPER_SMALL: &str =
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
+    pub const WHISPER_TURBO: &str =
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
     pub const WHISPER_MEDIUM: &str =
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin";
 }
@@ -23,6 +25,7 @@ pub mod filenames {
     pub const WHISPER_TINY: &str = "ggml-tiny.bin";
     pub const WHISPER_BASE: &str = "ggml-base.bin";
     pub const WHISPER_SMALL: &str = "ggml-small.bin";
+    pub const WHISPER_TURBO: &str = "ggml-large-v3-turbo-q5_0.bin";
     pub const WHISPER_MEDIUM: &str = "ggml-medium.bin";
 }
 
@@ -82,6 +85,48 @@ pub struct AppConfig {
     /// Optional API key for cloud LLMs (Groq, OpenAI, Gemini, DeepSeek)
     #[serde(default)]
     pub assistant_api_key: Option<String>,
+
+    /// Noise suppression / cancellation level: "none", "default", or "aggressive"
+    #[serde(default)]
+    pub noise_suppression: NoiseSuppression,
+}
+
+/// Noise suppression mode for audio capture, VAD, and preprocessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NoiseSuppression {
+    #[serde(rename = "none", alias = "no", alias = "off", alias = "false")]
+    None,
+    #[default]
+    #[serde(rename = "default", alias = "some", alias = "moderate", alias = "normal")]
+    Default,
+    #[serde(rename = "aggressive", alias = "agresive", alias = "high")]
+    Aggressive,
+}
+
+impl NoiseSuppression {
+    pub fn display_label(&self, _lang: &UiLanguage) -> &'static str {
+        match self {
+            NoiseSuppression::None => "None",
+            NoiseSuppression::Default => "Default",
+            NoiseSuppression::Aggressive => "Aggressive",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            NoiseSuppression::None => NoiseSuppression::Default,
+            NoiseSuppression::Default => NoiseSuppression::Aggressive,
+            NoiseSuppression::Aggressive => NoiseSuppression::None,
+        }
+    }
+
+    pub fn prev(&self) -> Self {
+        match self {
+            NoiseSuppression::None => NoiseSuppression::Aggressive,
+            NoiseSuppression::Default => NoiseSuppression::None,
+            NoiseSuppression::Aggressive => NoiseSuppression::Default,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -115,6 +160,7 @@ impl Default for AppConfig {
             assistant_url: default_assistant_url(),
             assistant_model: default_assistant_model(),
             assistant_api_key: None,
+            noise_suppression: NoiseSuppression::Default,
         }
     }
 }
@@ -178,6 +224,7 @@ impl AppConfig {
         match self.model_tier.to_lowercase().as_str() {
             "tiny" => urls::WHISPER_TINY,
             "small" => urls::WHISPER_SMALL,
+            "turbo" | "large-v3-turbo" => urls::WHISPER_TURBO,
             "medium" => urls::WHISPER_MEDIUM,
             _ => urls::WHISPER_BASE,
         }
@@ -188,6 +235,7 @@ impl AppConfig {
         match self.model_tier.to_lowercase().as_str() {
             "tiny" => filenames::WHISPER_TINY,
             "small" => filenames::WHISPER_SMALL,
+            "turbo" | "large-v3-turbo" => filenames::WHISPER_TURBO,
             "medium" => filenames::WHISPER_MEDIUM,
             _ => filenames::WHISPER_BASE,
         }

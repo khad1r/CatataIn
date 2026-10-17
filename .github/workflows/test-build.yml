@@ -20,9 +20,14 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Run Core Engine Unit Tests
         run: cargo test --workspace --no-default-features
 
       - name: Test production CLI build
         run: cargo build --release -p catetin-cli
+
+      - name: Test WebAssembly build
+        run: cargo build --target wasm32-unknown-unknown --release -p catetin-wasm

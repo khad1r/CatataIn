@@ -53,6 +53,6 @@ pub mod logging;
 pub mod pipeline;
 
 
-pub use config::AppConfig;
+pub use config::{AppConfig, NoiseSuppression};
 pub use i18n::UiLanguage;
 pub use pipeline::{CatetinPipeline, DiarizationMode, PipelineHandle};

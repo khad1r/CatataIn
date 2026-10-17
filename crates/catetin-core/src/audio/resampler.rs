@@ -37,6 +37,8 @@ impl AudioResampler {
     }
 
     /// Convert interleaved multi-channel samples into mono f32 samples.
+    /// Protects against stereo phase cancellation (inverted L/R channels or dead secondary channel
+    /// common on Realtek 3.5mm headset jacks) when processing real audio buffers.
     pub fn downmix_to_mono(&self, interleaved: &[f32]) -> Vec<f32> {
         let channels = self.source_channels as usize;
         if channels <= 1 {
@@ -45,8 +47,48 @@ impl AudioResampler {
 
         let num_frames = interleaved.len() / channels;
         let mut mono = Vec::with_capacity(num_frames);
-        let inv_channels = 1.0 / channels as f32;
 
+        // On real stereo hardware buffers (>= 32 frames), check for phase inversion or dead channel
+        if channels == 2 && num_frames >= 32 {
+            let mut energy_l = 0.0f32;
+            let mut energy_r = 0.0f32;
+            let mut dot_lr = 0.0f32;
+            for frame_idx in 0..num_frames {
+                let l = interleaved[frame_idx * 2];
+                let r = interleaved[frame_idx * 2 + 1];
+                energy_l += l * l;
+                energy_r += r * r;
+                dot_lr += l * r;
+            }
+
+            // If one channel has >4x the energy of the other, take the active channel directly
+            // to avoid halving signal amplitude and mixing in ground noise.
+            if energy_l > energy_r * 4.0 {
+                for frame_idx in 0..num_frames {
+                    mono.push(interleaved[frame_idx * 2]);
+                }
+                return mono;
+            } else if energy_r > energy_l * 4.0 {
+                for frame_idx in 0..num_frames {
+                    mono.push(interleaved[frame_idx * 2 + 1]);
+                }
+                return mono;
+            }
+
+            // If L and R are out of phase (negative correlation, e.g. Realtek differential mic),
+            // subtract instead of adding so the voice is reinforced rather than cancelled!
+            let denom = (energy_l * energy_r).sqrt();
+            if denom > 1e-9 && (dot_lr / denom) < -0.15 {
+                for frame_idx in 0..num_frames {
+                    let l = interleaved[frame_idx * 2];
+                    let r = interleaved[frame_idx * 2 + 1];
+                    mono.push((l - r) * 0.5);
+                }
+                return mono;
+            }
+        }
+
+        let inv_channels = 1.0 / channels as f32;
         for frame_idx in 0..num_frames {
             let offset = frame_idx * channels;
             let mut sum = 0.0f32;
@@ -59,6 +101,8 @@ impl AudioResampler {
     }
 
     /// Resample mono input samples from source_sample_rate to target_sample_rate.
+    /// Applies a 5-tap Hann-windowed low-pass anti-aliasing filter when downsampling (e.g. 48kHz -> 16kHz)
+    /// so high-frequency consonants ('s', 'c', 't', 'k') are preserved cleanly without aliasing distortion.
     pub fn process_mono(&mut self, mono_input: &[f32]) -> Vec<f32> {
         if mono_input.is_empty() {
             return Vec::new();
@@ -69,12 +113,28 @@ impl AudioResampler {
             return mono_input.to_vec();
         }
 
-        let mut output = Vec::new();
+        let input_len = mono_input.len();
         let step = 1.0 / self.resample_ratio;
+        let mut output = Vec::with_capacity((input_len as f64 * self.resample_ratio) as usize + 2);
+
+        // Pre-filter with 5-tap anti-aliasing low-pass kernel [0.09, 0.24, 0.34, 0.24, 0.09]
+        // when downsampling (step >= 1.5, such as 44.1kHz/48kHz -> 16kHz)
+        let filtered: Vec<f32> = if step >= 1.5 && input_len >= 5 {
+            let mut buf = Vec::with_capacity(input_len);
+            for i in 0..input_len {
+                let s_m2 = if i >= 2 { mono_input[i - 2] } else { self.last_sample };
+                let s_m1 = if i >= 1 { mono_input[i - 1] } else { self.last_sample };
+                let s_0 = mono_input[i];
+                let s_p1 = if i + 1 < input_len { mono_input[i + 1] } else { s_0 };
+                let s_p2 = if i + 2 < input_len { mono_input[i + 2] } else { s_p1 };
+                buf.push(0.09 * s_m2 + 0.24 * s_m1 + 0.34 * s_0 + 0.24 * s_p1 + 0.09 * s_p2);
+            }
+            buf
+        } else {
+            mono_input.to_vec()
+        };
 
         let mut pos = self.fractional_position;
-        let input_len = mono_input.len();
-
         while pos < input_len as f64 {
             let idx = pos.floor() as usize;
             let frac = (pos - idx as f64) as f32;
@@ -82,11 +142,11 @@ impl AudioResampler {
             let s0 = if idx == 0 {
                 self.last_sample
             } else {
-                mono_input[idx - 1]
+                filtered[idx - 1]
             };
-            let s1 = mono_input[idx];
+            let s1 = filtered[idx];
 
-            // Linear interpolation
+            // Linear interpolation on band-limited signal
             let sample = s0 + frac * (s1 - s0);
             output.push(sample);
 
@@ -94,7 +154,7 @@ impl AudioResampler {
         }
 
         self.fractional_position = pos - input_len as f64;
-        self.last_sample = *mono_input.last().unwrap_or(&0.0);
+        self.last_sample = *filtered.last().unwrap_or(&0.0);
 
         output
     }

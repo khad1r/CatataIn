@@ -12,30 +12,31 @@ permissions:
 
 jobs:
   build-binaries:
-    name: Build Windows Release Binary
-    runs-on: windows-latest
+    name: Build Multiplatform Binaries via Docker
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Build all targets (Windows, Linux, WASM) via Docker
+        run: docker build --target export --output dist/ .
 
-      - name: Build release executable (catetin.exe)
-        run: cargo build --release -p catetin-cli
-
-      - name: Package Windows ZIP
-        shell: pwsh
+      - name: Package Release Archives
         run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Compress-Archive -Path target/release/catetin.exe -DestinationPath dist/catetin-windows-x64.zip
+          cd dist
+          zip -9 catetin-windows-x64.zip catetin.exe
+          tar -czf catetin-linux-x64.tar.gz catetin-linux
+          zip -9 catetin-wasm.zip catetin_wasm.wasm
 
-      - name: Upload Build Artifact
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-dist
-          path: dist/catetin-windows-x64.zip
+          path: |
+            dist/catetin-windows-x64.zip
+            dist/catetin-linux-x64.tar.gz
+            dist/catetin-wasm.zip
 
   release:
     name: Semantic Release

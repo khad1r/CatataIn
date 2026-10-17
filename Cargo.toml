@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/catetin-core",
     "crates/catetin-cli",
+    "crates/catetin-wasm",
 ]
 
 [workspace.package]

@@ -14,7 +14,7 @@ default = ["whisper"]
 whisper = ["catetin-core/whisper"]
 
 [dependencies]
-catetin-core = { path = "../catetin-core", default-features = false }
+catetin-core = { path = "../catetin-core" }
 anyhow.workspace = true
 log.workspace = true
 serde_json.workspace = true

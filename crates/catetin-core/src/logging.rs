@@ -10,11 +10,16 @@ use crate::config::AppConfig;
 
 /// Path of the currently active log file.
 static LOG_FILE_PATH: OnceLock<PathBuf> = OnceLock::new();
+static STDERR_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Enable or disable echoing log messages to stderr at runtime (e.g. disable during full-screen TUI).
+pub fn set_stderr_enabled(enabled: bool) {
+    STDERR_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Dedicated file-based logger to keep stdout/stderr clean for TUI & terminal screens.
 struct CatetinLogger {
     file: Mutex<Option<File>>,
-    enable_stderr: bool,
 }
 
 impl log::Log for CatetinLogger {
@@ -42,7 +47,7 @@ impl log::Log for CatetinLogger {
             }
         }
 
-        if self.enable_stderr {
+        if STDERR_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
             eprint!("{}", line);
         }
     }
@@ -89,10 +94,10 @@ pub fn init_logger(config: &AppConfig, enable_stderr: bool) -> Result<PathBuf> {
     };
 
     let _ = LOG_FILE_PATH.set(log_file_path.clone());
+    STDERR_ENABLED.store(enable_stderr, std::sync::atomic::Ordering::Relaxed);
 
     let logger = CatetinLogger {
         file: Mutex::new(Some(file)),
-        enable_stderr,
     };
 
     // If logger was already initialized (e.g. in test suites), ignore error

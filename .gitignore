@@ -6,5 +6,5 @@
 foresight_mac/
 foresight_mac.dmg
 *.log
-.DS_Store
+*.exe
 Thumbs.db
