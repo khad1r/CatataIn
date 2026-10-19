@@ -29,5 +29,13 @@ jobs:
       - name: Test production CLI build
         run: cargo build --release -p catetin-cli
 
+      - name: Copy native runtime DLLs for Windows smoke test
+        run: Copy-Item crates/catetin-core/native/win-x64/*.dll target/release/
+
+      - name: Verify CLI smoke test
+        run: |
+          .\target\release\catetin.exe --version
+          .\target\release\catetin.exe --help
+
       - name: Test WebAssembly build
         run: cargo build --target wasm32-unknown-unknown --release -p catetin-wasm

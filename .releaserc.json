@@ -27,6 +27,14 @@
           {
             "path": "dist/catetin-windows-x64.zip",
             "label": "Catetin Windows (x64) Standalone Executable"
+          },
+          {
+            "path": "dist/catetin-linux-x64.tar.gz",
+            "label": "Catetin Linux (x64) Standalone Binary"
+          },
+          {
+            "path": "dist/catetin-wasm.zip",
+            "label": "Catetin WebAssembly Package"
           }
         ]
       }

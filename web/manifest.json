@@ -1,0 +1,8 @@
+{
+  "name": "Catetin",
+  "short_name": "Catetin",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#1a1a1a"
+}

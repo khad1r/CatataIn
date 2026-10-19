@@ -25,9 +25,9 @@ jobs:
       - name: Package Release Archives
         run: |
           cd dist
-          zip -9 catetin-windows-x64.zip catetin.exe
-          tar -czf catetin-linux-x64.tar.gz catetin-linux
-          zip -9 catetin-wasm.zip catetin_wasm.wasm
+          zip -9 catetin-windows-x64.zip catetin.exe sherpa-onnx-c-api.dll onnxruntime.dll
+          tar -czf catetin-linux-x64.tar.gz catetin
+          zip -9 catetin-wasm.zip catetin.wasm
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4

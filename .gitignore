@@ -7,4 +7,5 @@ foresight_mac/
 foresight_mac.dmg
 *.log
 *.exe
+*.wasm
 Thumbs.db

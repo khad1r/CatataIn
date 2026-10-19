@@ -103,3 +103,35 @@ Dokumen ini mencatat seluruh keputusan arsitektur, filosofi CLI flags, dan atura
 - **Streaming Transducer Pass 1 (Cepat < 50ms):**
   - Menggunakan model dedicated Bahasa Indonesia (`sherpa-onnx-streaming-zipformer2-id` dari `spacewave`).
   - Menyediakan pengetikan langsung instan secara verbatim.
+
+---
+
+## 8. Standarisasi CI/CD GitHub Actions & Release Packaging
+- **Perbaikan Nama Berkas Rilis:**
+  - Binari Linux hasil build Docker bernama `catetin` (bukan `catetin-linux`).
+  - Berkas WebAssembly hasil build Docker bernama `catetin.wasm` (bukan `catetin_wasm.wasm`).
+- **Kelengkapan Bundle Windows:**
+  - Paket `catetin-windows-x64.zip` wajib menyertakan `catetin.exe`, `sherpa-onnx-c-api.dll`, dan `onnxruntime.dll` agar portabel dan dapat langsung dijalankan tanpa error DLL hilang.
+- **Aset Rilis Semantic Release:**
+  - `.releaserc.json` menerbitkan 3 aset resmi di GitHub Releases:
+    1. `catetin-windows-x64.zip`
+    2. `catetin-linux-x64.tar.gz`
+    3. `catetin-wasm.zip`
+- **Smoke Test Windows CI:**
+  - Alur `test-build.yml` memverifikasi eksekusi binari Windows (`catetin.exe --version` & `catetin.exe --help`) bersama DLL native sebelum pengujian dinyatakan lolos.
+
+---
+
+## 9. Arsitektur Catetin Web PWA (Prinsip Ponytail)
+- **Zero Heavy Framework & Zero Build Step Runtime:**
+  - Tidak menggunakan React, Vue, Webpack, atau tumpukan node_modules. Menggunakan fitur peramban native: **Native Web Components** (`<vu-meter>`, `<transcript-view>`, `<notes-view>`) dan **ES Modules**.
+  - Bebas flow berbelit/wizard: Tampilan 1-layar langsung siap kerja (Header kontrol minimalis, 65% feed transkrip, 35% catatan topik & checklist).
+- **Tipografi Bersih (Anti AI-Slop):**
+  - Menggunakan font sistem (`system-ui`) dengan kontras tinggi. Hapus seluruh esai/paragraf pengantar panjang; label tombol maksimal 1-2 kata.
+- **Penyimpanan Sandbox OPFS:**
+  - Model ONNX disimpan di **Origin Private File System (OPFS)** browser untuk streaming zero-copy access handle tanpa overhead de-serialisasi database.
+- **Dua Sumber Suara:**
+  - Mikrofon lokal (`getUserMedia`) dilabeli sebagai `[Anda]`.
+  - Audio tab rapat (`getDisplayMedia`) dilabeli sebagai `[Pembicara 1]`, `[2]`, dst.
+- **Ekspor Dokumen:**
+  - Tombol simpan langsung menghasilkan unduhan `notulensi.md` yang 100% kompatibel dengan format catatan CLI Catetin.

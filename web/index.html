@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Catetin</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Catetin</h1>
+      <span id="status-vad" class="vad-dot" title="Deteksi Suara VAD"></span>
+    </div>
+
+    <div class="controls">
+      <vu-meter></vu-meter>
+      <button id="btn-start" class="btn btn-primary">🎙 Mulai</button>
+      <button id="btn-tab" class="btn">🖥️ Audio Tab</button>
+      <button id="btn-pause" class="btn" disabled>⏸ Jeda</button>
+      <button id="btn-save" class="btn">💾 Simpan .md</button>
+      <button id="btn-clear" class="btn btn-subtle" title="Kosongkan">🗑️</button>
+    </div>
+  </header>
+
+  <main>
+    <transcript-view></transcript-view>
+    <notes-view></notes-view>
+  </main>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
