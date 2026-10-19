@@ -1,16 +1,58 @@
 use anyhow::Result;
-#[cfg(feature = "whisper")]
 use std::path::Path;
+
+pub mod discovery;
+pub use discovery::{
+    discover_all_models, discover_transducer_models, discover_whisper_models, find_transducer_model_files,
+    find_whisper_model_files, DiscoveredModel, ModelKind,
+};
+
+pub mod transducer;
+pub use transducer::{
+    create_sherpa_whisper, create_transducer, create_transducer_for_lang, ensure_runtime_extracted,
+    has_transducer_installed, has_transducer_installed_for_lang,
+    has_whisper_onnx_installed, ipa_phonemes_to_indonesian, try_create_transducer,
+    DualStreamingTransducer, StreamingTransducer,
+};
+#[cfg(feature = "transducer")]
+pub use transducer::SherpaWhisperEngine;
+
+/// Factory to instantiate the Whisper SpeechRecognizer for Pass 2 (100% ONNX CPU/DirectML):
+pub fn create_speech_recognizer(
+    models_dir: &Path,
+    tier: &str,
+    language: &str,
+) -> Result<Box<dyn SpeechRecognizer>> {
+    if has_whisper_onnx_installed(models_dir, tier) {
+        log::info!("[ASR] Found Whisper ONNX model for tier '{}', initializing engine...", tier);
+        return create_sherpa_whisper(models_dir, tier, language);
+    }
+
+    anyhow::bail!(
+        "Whisper ONNX model not found for tier '{}' in {:?}.\n\
+         Run 'catetin' to download the required Whisper ONNX model.",
+        tier, models_dir
+    )
+}
 
 pub trait SpeechRecognizer: Send + Sync {
     /// Transcribe a slice of 16,000Hz mono f32 samples into text
     fn transcribe(&mut self, samples_16k_mono: &[f32]) -> Result<String>;
+
+    /// Transcribe with an explicit rolling context prompt and return `(text, confidence)`
+    /// where `confidence` is the mean token probability in `[0.0, 1.0]`.
+    fn transcribe_with_context(
+        &mut self,
+        samples_16k_mono: &[f32],
+        _context_prompt: Option<&str>,
+    ) -> Result<(String, f32)> {
+        let text = self.transcribe(samples_16k_mono)?;
+        Ok((text, 0.90))
+    }
+
     /// Current language setting (e.g. "auto", "id", "en")
     fn language(&self) -> &str;
 }
-
-
-
 
 /// Lightweight testing recognizer strictly for automated unit tests
 #[cfg(test)]
@@ -40,204 +82,218 @@ impl SpeechRecognizer for MockRecognizer {
     }
 }
 
-#[cfg(feature = "whisper")]
-pub mod whisper_backend {
-    use super::*;
-    use std::sync::Once;
-    use whisper_rs::{
-        FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+
+/// Detect common Whisper hallucination artifacts generated on silence or music
+pub fn is_hallucination(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    // Check for music symbols anywhere in text
+    if lower.contains('♪') || lower.contains('♫') || lower.contains('♩') || lower.contains('♬') {
+        return true;
+    }
+
+    let trimmed = lower.trim().trim_matches(|c: char| !c.is_alphanumeric());
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    // Check for common YouTube / social media outro hallucinations
+    if lower.contains("subscribe")
+        || lower.contains("subkrek")
+        || lower.contains("langganan")
+        || lower.contains("lonceng")
+        || lower.contains("notifikasi")
+    {
+        if lower.contains("like")
+            || lower.contains("share")
+            || lower.contains("video")
+            || lower.contains("channel")
+            || lower.contains("kanal")
+            || lower.contains("jangan lupa")
+            || lower.contains("tombol")
+            || lower.contains("kalian yang")
+            || lower.contains("teman-teman")
+            || lower.contains("gratis")
+            || lower.contains("update")
+            || lower.contains("konten")
+        {
+            return true;
+        }
+    }
+
+    if lower.contains("jangan lupa")
+        && (lower.contains("like")
+            || lower.contains("share")
+            || lower.contains("komen")
+            || lower.contains("tonton")
+            || lower.contains("subscribe"))
+    {
+        return true;
+    }
+
+    if lower.contains("like, comment")
+        || lower.contains("like dan share")
+        || lower.contains("like & share")
+        || lower.contains("like and share")
+        || lower.contains("like and subscribe")
+        || lower.contains("kolom komentar")
+        || lower.contains("link di deskripsi")
+        || lower.contains("baca deskripsi")
+        || lower.contains("terima kasih telah menonton")
+        || lower.contains("terima kasih sudah menonton")
+        || lower.contains("sampai jumpa di video")
+        || lower.contains("tonton video")
+        || lower.contains("video ini untuk kalian")
+        || lower.contains("video ini bagi kalian")
+        || lower.contains("kalian yang suka")
+        || lower.contains("untuk kalian yang suka")
+        || lower.contains("menonton video ini")
+        || lower.contains("untuk menonton video")
+        || lower.contains("tonton video ini")
+        || lower.contains("video ini untuk menonton")
+        || lower.contains("ingin menonton video")
+    {
+        return true;
+    }
+
+    const HALLUCINATIONS: &[&str] = &[
+        "thank you for watching",
+        "thanks for watching",
+        "thank you for watching this video",
+        "see you next time",
+        "see you in the next video",
+        "thank you for watching this video and see you next time",
+        "please subscribe",
+        "subscribe to my channel",
+        "like and subscribe",
+        "like, comment, and subscribe",
+        "subtitles by",
+        "translated by",
+        "captioned by",
+        "terima kasih telah menonton",
+        "terima kasih sudah menonton",
+        "sampai jumpa di video selanjutnya",
+        "sampai jumpa lagi",
+        "sampai jumpa",
+        "menonton video ini",
+        "untuk menonton video ini",
+        "music",
+        "musik",
+        "instrumental",
+        "suara musik",
+        "alunan musik",
+        "backsound",
+        "lagu",
+        "nada",
+        "hening",
+        "silence",
+        "bye",
+        "bye bye",
+        "dadah",
+        "jangan lupa subscribe",
+        "jangan lupa like",
+        "jangan lupa share",
+        "jangan lupa like dan share",
+        "subscribe dan like",
+        "subscribe dan share",
+    ];
+
+    for &h in HALLUCINATIONS {
+        if trimmed == h || trimmed.contains(h) {
+            return true;
+        }
+    }
+
+    if has_repetition_hallucination(trimmed) {
+        return true;
+    }
+
+    false
+}
+
+/// Detects runaway autoregressive loop hallucinations in Whisper output.
+/// Returns true if any 1-to-8 word n-gram repeats consecutively 3 or more times,
+/// or if word diversity (unique words / total words) is abnormally low on long sentences.
+pub fn has_repetition_hallucination(text: &str) -> bool {
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.len() < 3 {
+        return false;
+    }
+
+    // Check for 1-word through 8-word phrases repeating 3 or more times consecutively
+    for n in 1..=8 {
+        if words.len() < n * 3 {
+            continue;
+        }
+        for i in 0..=(words.len() - n * 3) {
+            let chunk1 = &words[i..i + n];
+            let chunk2 = &words[i + n..i + 2 * n];
+            let chunk3 = &words[i + 2 * n..i + 3 * n];
+            if chunk1 == chunk2 && chunk2 == chunk3 {
+                return true;
+            }
+        }
+    }
+
+    // Check word diversity (compression ratio approximation):
+    // If an utterance has >= 14 words, but fewer than 35% are unique words
+    if words.len() >= 14 {
+        let mut unique = std::collections::HashSet::new();
+        for w in &words {
+            unique.insert(w.to_ascii_lowercase());
+        }
+        if (unique.len() as f32 / words.len() as f32) < 0.35 {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Clean up whitespace, strip accidental prompt echo, and ensure sentence capitalization.
+pub fn format_utterance(input: &str, prompt: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let prompt_trim = prompt.trim();
+    let working = if !prompt_trim.is_empty() && trimmed.len() > prompt_trim.len() {
+        if trimmed
+            .get(..prompt_trim.len())
+            .map(|p| p.eq_ignore_ascii_case(prompt_trim))
+            .unwrap_or(false)
+        {
+            trimmed[prompt_trim.len()..].trim()
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
     };
 
-    static WHISPER_LOG_INIT: Once = Once::new();
-
-    fn ensure_logging_hooks() {
-        WHISPER_LOG_INIT.call_once(|| {
-            whisper_rs::install_logging_hooks();
-        });
-    }
-
-    pub struct WhisperEngine {
-        _ctx: WhisperContext,
-        state: WhisperState,
-        language: String,
-    }
-
-    // Safety: WhisperEngine is owned and accessed sequentially by the dedicated ASR worker thread
-    unsafe impl Send for WhisperEngine {}
-    unsafe impl Sync for WhisperEngine {}
-
-    impl WhisperEngine {
-        pub fn load_from_file<P: AsRef<Path>>(path: P, language: &str) -> Result<Self> {
-            ensure_logging_hooks();
-            let path_str = path.as_ref().to_str().ok_or_else(|| {
-                anyhow::anyhow!("Invalid unicode in model path: {:?}", path.as_ref())
-            })?;
-
-            let params = WhisperContextParameters::default();
-            let ctx = WhisperContext::new_with_params(path_str, params)
-                .map_err(|e| anyhow::anyhow!("Failed to initialize WhisperContext: {:?}", e))?;
-            let state = ctx
-                .create_state()
-                .map_err(|e| anyhow::anyhow!("Failed to create WhisperState: {:?}", e))?;
-
-            Ok(Self {
-                _ctx: ctx,
-                state,
-                language: language.to_string(),
-            })
-        }
-
-        pub fn load_from_bytes(bytes: &[u8], language: &str) -> Result<Self> {
-            ensure_logging_hooks();
-            let params = WhisperContextParameters::default();
-            let ctx = WhisperContext::new_from_buffer_with_params(bytes, params).map_err(|e| {
-                anyhow::anyhow!("Failed to initialize WhisperContext from buffer: {:?}", e)
-            })?;
-            let state = ctx
-                .create_state()
-                .map_err(|e| anyhow::anyhow!("Failed to create WhisperState: {:?}", e))?;
-
-            Ok(Self {
-                _ctx: ctx,
-                state,
-                language: language.to_string(),
-            })
-        }
-    }
-
-    impl SpeechRecognizer for WhisperEngine {
-        fn transcribe(&mut self, samples: &[f32]) -> Result<String> {
-            // 1. Ignore micro-clicks shorter than 200ms (3,200 samples at 16kHz)
-            if samples.len() < 3_200 {
-                return Ok(String::new());
-            }
-
-            // 2. Cap maximum chunk size at 6.0s (96,000 samples)
-            let capped = if samples.len() > 96_000 {
-                &samples[..96_000]
-            } else {
-                samples
-            };
-
-            let peak = capped
-                .iter()
-                .fold(0.0f32, |acc, &x| acc.max(x.abs()));
-
-            // Skip pure background hum/air if peak amplitude is too low to be speech
-            if peak < 0.012 {
-                return Ok(String::new());
-            }
-
-            let gain = if peak < 0.40 {
-                (0.55 / peak).min(10.0)
-            } else {
-                1.0
-            };
-
-            // Dynamic audio_ctx scaling: 1500 encoder frames = 30.0s (320 samples per encoder frame at 16kHz).
-            // Add 24 frames (~480ms) of clean trailing silence so the encoder clearly sees end-of-speech
-            // and pad `prepared` to the exact `audio_ctx * 320` window so reused WhisperState mel buffers
-            // never contain leftover audio from a previous utterance.
-            let speech_frames = (capped.len() as i32 + 319) / 320;
-            let needed_frames = speech_frames + 24;
-            let audio_ctx = ((needed_frames + 63) / 64 * 64).clamp(128, 1500);
-            let target_samples = (audio_ctx as usize * 320).max(20_480);
-
-            // Add 160ms (2,560 samples) of leading silence + speech + trailing silence up to target_samples
-            let lead_pad = 2_560usize;
-            let mut prepared = Vec::with_capacity(target_samples + lead_pad);
-            prepared.resize(lead_pad, 0.0);
-            for &s in capped {
-                prepared.push((s * gain).clamp(-1.0, 1.0));
-            }
-            if prepared.len() < target_samples {
-                prepared.resize(target_samples, 0.0);
-            }
-
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-            let n_threads = std::thread::available_parallelism()
-                .map(|n| n.get().clamp(4, 8) as i32)
-                .unwrap_or(4);
-            params.set_n_threads(n_threads);
-            params.set_audio_ctx(audio_ctx);
-            // A 1-6s utterance has at most ~25 tokens; capping at 32 prevents runaway decoder loops
-            params.set_max_tokens(32);
-
-            if self.language.is_empty() || self.language.eq_ignore_ascii_case("auto") {
-                params.set_language(Some("id"));
-            } else {
-                params.set_language(Some(&self.language));
-            }
-
-            params.set_translate(false); // Verbatim transcription
-            params.set_no_context(true); // Prevent hallucination loops across chunks
-            params.set_single_segment(true);
-            // IMPORTANT: Keep timestamp tokens enabled internally (`no_timestamps = false`)!
-            // Whisper uses `<|0.00|> ... <|1.80|>` timestamp tokens to anchor attention monotonically
-            // in time; disabling them causes Whisper to loop back to 0.00s and repeat sentences 2-3x!
-            params.set_no_timestamps(false);
-            params.set_suppress_blank(true);
-            params.set_suppress_nst(true);
-            params.set_no_speech_thold(0.60);
-            params.set_logprob_thold(-1.0);
-            params.set_entropy_thold(2.40);
-            params.set_temperature(0.0);
-            params.set_temperature_inc(0.0); // Disable slow 6x temperature fallback retries
-            params.set_print_special(false);
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_timestamps(false);
-
-            self.state
-                .full(params, &prepared)
-                .map_err(|e| anyhow::anyhow!("Failed to run Whisper inference: {:?}", e))?;
-
-            let mut text = String::new();
-            for segment in self.state.as_iter() {
-                let seg_str = segment.to_string();
-                let clean = seg_str.trim();
-                // Filter out Whisper non-speech placeholder tags
-                if !clean.is_empty()
-                    && !clean.starts_with('[')
-                    && !clean.starts_with('(')
-                    && !clean.starts_with('*')
-                {
-                    text.push_str(clean);
-                    text.push(' ');
-                }
-            }
-
-            Ok(deduplicate_repetitions(text.trim()))
-        }
-
-        fn language(&self) -> &str {
-            &self.language
-        }
-    }
-
-    /// Collapse immediate consecutive sentence/phrase repetitions that can occur on short audio buffers
-    /// (e.g. "Halo, halo, 123. Halo, halo, 123." -> "Halo, halo, 123.").
-    fn deduplicate_repetitions(input: &str) -> String {
-        if input.is_empty() {
-            return String::new();
-        }
-        let mut unique_parts: Vec<&str> = Vec::new();
-        for part in input.split_inclusive(&['.', '!', '?'][..]) {
-            let trimmed = part.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Some(&last) = unique_parts.last() {
-                if last.trim().eq_ignore_ascii_case(trimmed) {
-                    continue;
-                }
-            }
-            unique_parts.push(trimmed);
-        }
-        if unique_parts.is_empty() {
-            input.to_string()
-        } else {
-            unique_parts.join(" ")
-        }
+    let mut chars = working.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_repetition_hallucination_detection() {
+        let repeated = "Saya ingin menonton video ini untuk menonton video ini dan menonton video ini untuk menonton video ini dan menonton video ini";
+        assert!(has_repetition_hallucination(repeated));
+        assert!(is_hallucination(repeated));
+
+        let normal = "Selamat pagi rekan-rekan, hari ini kita akan membahas tentang kemajuan proyek terkini.";
+        assert!(!has_repetition_hallucination(normal));
+        assert!(!is_hallucination(normal));
+    }
+}
+

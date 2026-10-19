@@ -175,7 +175,7 @@ impl DualAudioCapture {
     fn from_input_and_all_outputs<I: Iterator<Item = Device>>(
         input_device: &Device,
         primary_output: &Device,
-        extra_outputs: Option<I>,
+        _extra_outputs: Option<I>,
     ) -> Result<Self> {
         let (mic_tx, mic_rx) = sync_channel::<AudioPacket>(100);
         let (loopback_tx, loopback_rx) = sync_channel::<AudioPacket>(100);
@@ -189,22 +189,7 @@ impl DualAudioCapture {
         primary_lb_stream.play().context("Failed to start loopback stream")?;
         log::info!("DualAudioCapture: Loopback stream successfully started");
 
-        let primary_name = primary_output.name().unwrap_or_default();
-        let mut loopback_streams = vec![primary_lb_stream];
-
-        if let Some(outputs) = extra_outputs {
-            for dev in outputs {
-                let name = dev.name().unwrap_or_default();
-                if !name.is_empty() && name != primary_name {
-                    if let Ok(extra_stream) = build_capture_stream(&dev, false, "Loopback-Secondary", loopback_tx.clone()) {
-                        if extra_stream.play().is_ok() {
-                            log::info!("DualAudioCapture: Attached secondary loopback stream for \"{}\"", name);
-                            loopback_streams.push(extra_stream);
-                        }
-                    }
-                }
-            }
-        }
+        let loopback_streams = vec![primary_lb_stream];
 
         Ok(Self {
             _mic_stream: mic_stream,

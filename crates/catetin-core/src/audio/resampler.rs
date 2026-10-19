@@ -37,8 +37,6 @@ impl AudioResampler {
     }
 
     /// Convert interleaved multi-channel samples into mono f32 samples.
-    /// Protects against stereo phase cancellation (inverted L/R channels or dead secondary channel
-    /// common on Realtek 3.5mm headset jacks) when processing real audio buffers.
     pub fn downmix_to_mono(&self, interleaved: &[f32]) -> Vec<f32> {
         let channels = self.source_channels as usize;
         if channels <= 1 {
@@ -48,56 +46,45 @@ impl AudioResampler {
         let num_frames = interleaved.len() / channels;
         let mut mono = Vec::with_capacity(num_frames);
 
-        // On real stereo hardware buffers (>= 32 frames), check for phase inversion or dead channel
-        if channels == 2 && num_frames >= 32 {
-            let mut energy_l = 0.0f32;
-            let mut energy_r = 0.0f32;
-            let mut dot_lr = 0.0f32;
+        // On laptops with 4-channel microphone arrays (e.g. Intel Smart Sound Technology / Realtek Quad),
+        // channels 0 and 1 are the primary stereo front microphones.
+        // Channels 2 and 3 are inverted phase / acoustic echo cancellation reference channels.
+        // Summing all 4 channels causes destructive phase cancellation that destroys voice frequencies!
+        // We therefore downmix ONLY the primary front channels (0 and 1) for all multi-channel devices.
+        if channels >= 2 {
+            // First check if one channel is dead (energy ~ 0)
+            if num_frames >= 32 {
+                let mut energy_l = 0.0f32;
+                let mut energy_r = 0.0f32;
+                for frame_idx in 0..num_frames {
+                    let l = interleaved[frame_idx * channels];
+                    let r = interleaved[frame_idx * channels + 1];
+                    energy_l += l * l;
+                    energy_r += r * r;
+                }
+                if energy_r < 1e-12 && energy_l > 1e-8 {
+                    for frame_idx in 0..num_frames {
+                        mono.push(interleaved[frame_idx * channels]);
+                    }
+                    return mono;
+                } else if energy_l < 1e-12 && energy_r > 1e-8 {
+                    for frame_idx in 0..num_frames {
+                        mono.push(interleaved[frame_idx * channels + 1]);
+                    }
+                    return mono;
+                }
+            }
+
             for frame_idx in 0..num_frames {
-                let l = interleaved[frame_idx * 2];
-                let r = interleaved[frame_idx * 2 + 1];
-                energy_l += l * l;
-                energy_r += r * r;
-                dot_lr += l * r;
+                let offset = frame_idx * channels;
+                let l = interleaved[offset];
+                let r = interleaved[offset + 1];
+                mono.push((l + r) * 0.5);
             }
-
-            // If one channel has >4x the energy of the other, take the active channel directly
-            // to avoid halving signal amplitude and mixing in ground noise.
-            if energy_l > energy_r * 4.0 {
-                for frame_idx in 0..num_frames {
-                    mono.push(interleaved[frame_idx * 2]);
-                }
-                return mono;
-            } else if energy_r > energy_l * 4.0 {
-                for frame_idx in 0..num_frames {
-                    mono.push(interleaved[frame_idx * 2 + 1]);
-                }
-                return mono;
-            }
-
-            // If L and R are out of phase (negative correlation, e.g. Realtek differential mic),
-            // subtract instead of adding so the voice is reinforced rather than cancelled!
-            let denom = (energy_l * energy_r).sqrt();
-            if denom > 1e-9 && (dot_lr / denom) < -0.15 {
-                for frame_idx in 0..num_frames {
-                    let l = interleaved[frame_idx * 2];
-                    let r = interleaved[frame_idx * 2 + 1];
-                    mono.push((l - r) * 0.5);
-                }
-                return mono;
-            }
+            return mono;
         }
 
-        let inv_channels = 1.0 / channels as f32;
-        for frame_idx in 0..num_frames {
-            let offset = frame_idx * channels;
-            let mut sum = 0.0f32;
-            for ch in 0..channels {
-                sum += interleaved[offset + ch];
-            }
-            mono.push(sum * inv_channels);
-        }
-        mono
+        interleaved.to_vec()
     }
 
     /// Resample mono input samples from source_sample_rate to target_sample_rate.

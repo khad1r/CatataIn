@@ -5,29 +5,6 @@ use std::path::{Path, PathBuf};
 use crate::i18n::UiLanguage;
 use crate::pipeline::DiarizationMode;
 
-/// Centralized download endpoints and repository URLs for offline models.
-/// All URLs can be customized or pointed to private mirrors/proxies.
-pub mod urls {
-    pub const WHISPER_TINY: &str =
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin";
-    pub const WHISPER_BASE: &str =
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
-    pub const WHISPER_SMALL: &str =
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
-    pub const WHISPER_TURBO: &str =
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
-    pub const WHISPER_MEDIUM: &str =
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin";
-}
-
-/// Standard filenames for cached models on local disk.
-pub mod filenames {
-    pub const WHISPER_TINY: &str = "ggml-tiny.bin";
-    pub const WHISPER_BASE: &str = "ggml-base.bin";
-    pub const WHISPER_SMALL: &str = "ggml-small.bin";
-    pub const WHISPER_TURBO: &str = "ggml-large-v3-turbo-q5_0.bin";
-    pub const WHISPER_MEDIUM: &str = "ggml-medium.bin";
-}
 
 
 /// Centralized application configuration.
@@ -86,6 +63,14 @@ pub struct AppConfig {
     #[serde(default)]
     pub assistant_api_key: Option<String>,
 
+    /// Streaming Transducer model identifier (default: "zipformer2-id")
+    #[serde(default = "default_transducer_model")]
+    pub transducer_model: String,
+
+    /// Explicit directory path for Transducer model files (None for auto-detection in model_dir)
+    #[serde(default)]
+    pub transducer_model_dir: Option<PathBuf>,
+
     /// Noise suppression / cancellation level: "none", "default", or "aggressive"
     #[serde(default)]
     pub noise_suppression: NoiseSuppression,
@@ -141,6 +126,10 @@ fn default_assistant_model() -> String {
     "llama3.2:1b".to_string()
 }
 
+fn default_transducer_model() -> String {
+    "zipformer2-id".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         let base_dir = default_app_dir();
@@ -160,6 +149,8 @@ impl Default for AppConfig {
             assistant_url: default_assistant_url(),
             assistant_model: default_assistant_model(),
             assistant_api_key: None,
+            transducer_model: default_transducer_model(),
+            transducer_model_dir: None,
             noise_suppression: NoiseSuppression::Default,
         }
     }
@@ -168,6 +159,20 @@ impl Default for AppConfig {
 
 
 impl AppConfig {
+    /// Resolved directory for streaming transducer model
+    pub fn transducer_dir(&self) -> PathBuf {
+        if let Some(ref dir) = self.transducer_model_dir {
+            dir.clone()
+        } else {
+            let direct = self.model_dir.join(format!("sherpa-onnx-streaming-{}", self.transducer_model));
+            if direct.exists() {
+                direct
+            } else {
+                self.model_dir.clone()
+            }
+        }
+    }
+
     /// Standard location for config file: `%APPDATA%\catetin\config.json` or `~/.catetin/config.json`
     pub fn config_file_path() -> PathBuf {
         default_app_dir().join("config.json")
@@ -216,29 +221,48 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Resolve download URL for the configured model tier
-    pub fn model_url(&self) -> &str {
-        if let Some(ref custom) = self.custom_model_url {
-            return custom.as_str();
-        }
-        match self.model_tier.to_lowercase().as_str() {
-            "tiny" => urls::WHISPER_TINY,
-            "small" => urls::WHISPER_SMALL,
-            "turbo" | "large-v3-turbo" => urls::WHISPER_TURBO,
-            "medium" => urls::WHISPER_MEDIUM,
-            _ => urls::WHISPER_BASE,
+    /// Check if the configured model tier corresponds to a Sherpa-ONNX Whisper model
+    pub fn is_onnx_tier(&self) -> bool {
+        true
+    }
+
+    /// User-friendly display label describing the active model architecture & hardware acceleration
+    pub fn model_display_name(&self) -> String {
+        format!("Whisper [{}] (Sherpa-ONNX CPU/GPU)", self.model_tier)
+    }
+
+    /// User-friendly display label describing the active transducer model
+    pub fn transducer_display_name(&self) -> String {
+        format!("Transducer [{}] (Sherpa-ONNX <50ms)", self.transducer_model)
+    }
+
+    /// User-friendly display label for ASR Audio transcription language
+    pub fn asr_language_display(&self) -> &str {
+        match self.asr_language.to_lowercase().as_str() {
+            "id" | "indonesian" => "Bahasa Indonesia [id]",
+            "en" | "english" => "English [en]",
+            _ => "Auto-Detect [id/en/auto]",
         }
     }
 
-    /// Resolve filename on disk for the configured model tier
-    pub fn model_filename(&self) -> &str {
-        match self.model_tier.to_lowercase().as_str() {
-            "tiny" => filenames::WHISPER_TINY,
-            "small" => filenames::WHISPER_SMALL,
-            "turbo" | "large-v3-turbo" => filenames::WHISPER_TURBO,
-            "medium" => filenames::WHISPER_MEDIUM,
-            _ => filenames::WHISPER_BASE,
-        }
+    /// Cycle ASR audio transcription language forward or backward
+    pub fn cycle_asr_language(&mut self, forward: bool) {
+        let cur = self.asr_language.to_lowercase();
+        self.asr_language = if forward {
+            match cur.as_str() {
+                "auto" => "id".to_string(),
+                "id" => "en".to_string(),
+                "en" => "auto".to_string(),
+                _ => "auto".to_string(),
+            }
+        } else {
+            match cur.as_str() {
+                "auto" => "en".to_string(),
+                "en" => "id".to_string(),
+                "id" => "auto".to_string(),
+                _ => "auto".to_string(),
+            }
+        };
     }
 }
 

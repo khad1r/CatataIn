@@ -34,9 +34,9 @@ impl VoiceActivityDetector {
         suppression: crate::config::NoiseSuppression,
     ) -> Self {
         let (energy_threshold, noise_floor, noise_adaptation_rate) = match suppression {
-            crate::config::NoiseSuppression::None => (0.0050, 0.0030, 0.03),
-            crate::config::NoiseSuppression::Default => (0.0100, 0.0040, 0.04),
-            crate::config::NoiseSuppression::Aggressive => (0.0200, 0.0060, 0.06),
+            crate::config::NoiseSuppression::None => (0.0025, 0.0008, 0.02),
+            crate::config::NoiseSuppression::Default => (0.0040, 0.0012, 0.03),
+            crate::config::NoiseSuppression::Aggressive => (0.0080, 0.0020, 0.04),
         };
         Self {
             sample_rate,
@@ -127,29 +127,28 @@ impl SpeechSegmenter {
             silence_frames_count: 0,
             speech_frames_count: 0,
             has_speech: false,
-            max_samples: sample_rate as usize * 6, // Max 6s per segment for natural full-sentence context
+            max_samples: sample_rate as usize * 9, // Tightened to 9.0s max for real-time responsiveness
             min_speech_frames: match suppression {
                 crate::config::NoiseSuppression::None => 5,       // 150ms speech
-                crate::config::NoiseSuppression::Default => 6,    // 180ms speech
-                crate::config::NoiseSuppression::Aggressive => 8, // 240ms speech
+                crate::config::NoiseSuppression::Default => 5,    // 150ms speech
+                crate::config::NoiseSuppression::Aggressive => 7, // 210ms speech
             },
-            max_silence_frames: 18, // ~540ms silence keeps full sentences together without mid-phrase cuts
-            min_peak_amplitude: 0.015,
+            max_silence_frames: 12, // ~360ms silence cuts natural sentence boundaries much faster
+            min_peak_amplitude: 0.003,
         }
     }
 
     /// Create a segmenter specifically calibrated for digital system loopback audio (Speakers/Headphones).
-    /// Digital loopback has zero analog noise floor and its amplitude scales with the OS volume slider
-    /// (often 0.002 - 0.015 RMS at comfortable headphone volume).
+    /// Digital loopback has zero analog noise floor and its amplitude scales with the OS volume slider.
     pub fn for_loopback(sample_rate: u32) -> Self {
         let frame_size = (sample_rate as f32 * 0.03) as usize; // 30ms = 480 samples
         let vad = VoiceActivityDetector {
             sample_rate,
             frame_size,
-            energy_threshold: 0.0012,
-            noise_floor: 0.0002,
+            energy_threshold: 0.0020,
+            noise_floor: 0.0003,
             noise_adaptation_rate: 0.02,
-            hangover_frames: 8, // ~240ms hangover
+            hangover_frames: 6, // ~180ms hangover
             hangover_counter: 0,
             is_speech_active: false,
         };
@@ -160,10 +159,10 @@ impl SpeechSegmenter {
             silence_frames_count: 0,
             speech_frames_count: 0,
             has_speech: false,
-            max_samples: sample_rate as usize * 6,
+            max_samples: sample_rate as usize * 8, // Tightened to 8.0s so continuous music/speech never runs away
             min_speech_frames: 5,   // 150ms speech
-            max_silence_frames: 16, // ~480ms silence
-            min_peak_amplitude: 0.0025,
+            max_silence_frames: 12, // ~360ms silence
+            min_peak_amplitude: 0.003,
         }
     }
 
@@ -175,7 +174,7 @@ impl SpeechSegmenter {
     /// Normalize utterance amplitude to an optimal level for Whisper's log-mel spectrogram
     /// while removing any hardware DC bias and clamping transient spikes outside [-1.0, 1.0].
     fn normalize_utterance(samples: &mut [f32]) {
-        if samples.is_empty() {
+        if samples.len() == 0 {
             return;
         }
         // Remove any DC offset from the microphone ADC
@@ -192,18 +191,23 @@ impl SpeechSegmenter {
         }
     }
 
-    /// Flush any currently buffered speech utterance (e.g. when stopping the session).
+    /// Flush any currently buffered speech utterance (e.g. when pausing or stopping the session).
     pub fn flush(&mut self) -> Option<Vec<f32>> {
-        let min_frames = (self.min_speech_frames / 2).max(3);
-        if self.has_speech && self.speech_frames_count >= min_frames && !self.buffer.is_empty() {
+        if !self.pending_samples.is_empty() {
+            self.buffer.extend_from_slice(&self.pending_samples);
+            self.pending_samples.clear();
+        }
+
+        if !self.buffer.is_empty() {
             let mut samples = std::mem::take(&mut self.buffer);
             self.has_speech = false;
             self.speech_frames_count = 0;
             self.silence_frames_count = 0;
             let peak = samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
-            if peak >= self.min_peak_amplitude {
+            // At least 200ms (3,200 samples) and minimal audible energy
+            if samples.len() >= 3200 && peak >= 0.003 && is_speech_utterance(&samples, self.vad.sample_rate) {
                 log::info!(
-                    "[VAD] Flushing final speech utterance on stop: {} samples ({:.2}s, peak={:.4})",
+                    "[VAD] Flushing speech utterance on pause/stop: {} samples ({:.2}s, peak={:.4})",
                     samples.len(),
                     samples.len() as f32 / self.vad.sample_rate as f32,
                     peak
@@ -220,7 +224,7 @@ impl SpeechSegmenter {
     }
 
     /// Push new 16kHz mono audio samples.
-    /// Returns `Some(Vec<f32>)` only when a full speech utterance is completed.
+    /// Returns `Some(Vec<f32>)` only when a full speech utterance is completed upon a natural pause.
     pub fn feed(&mut self, samples: &[f32]) -> Option<Vec<f32>> {
         self.pending_samples.extend_from_slice(samples);
         let frame_size = self.vad.frame_size;
@@ -236,15 +240,15 @@ impl SpeechSegmenter {
                 self.silence_frames_count = 0;
                 self.buffer.extend_from_slice(&frame);
 
-                // Also flush if continuous speech reaches max_samples (6s) without a pause
+                // Hard upper safety ceiling (24s) in case someone speaks non-stop without pausing
                 if self.buffer.len() >= self.max_samples
                     && self.speech_frames_count >= self.min_speech_frames
                 {
                     let mut samples = std::mem::take(&mut self.buffer);
                     let peak = samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
-                    if peak >= self.min_peak_amplitude {
+                    if peak >= self.min_peak_amplitude && is_speech_utterance(&samples, self.vad.sample_rate) {
                         log::info!(
-                            "[VAD] Speech utterance ready (max-len flush): {} frames, {} samples ({:.2}s, peak={:.4})",
+                            "[VAD] Speech utterance ready (max-len safety split): {} frames, {} samples ({:.2}s, peak={:.4})",
                             self.speech_frames_count,
                             samples.len(),
                             samples.len() as f32 / self.vad.sample_rate as f32,
@@ -252,24 +256,30 @@ impl SpeechSegmenter {
                         );
                         Self::normalize_utterance(&mut samples);
                         completed_utterance = Some(samples);
+                    } else {
+                        log::info!(
+                            "[VAD] Discarded non-speech audio on max-len split: {} samples ({:.2}s)",
+                            samples.len(),
+                            samples.len() as f32 / self.vad.sample_rate as f32
+                        );
                     }
                     self.has_speech = false;
                     self.speech_frames_count = 0;
                     self.silence_frames_count = 0;
                 }
             } else if self.has_speech {
-                // We are in an active utterance, but currently experiencing an inter-word pause
+                // We are in an active utterance, but currently experiencing an inter-word or end-of-phrase pause
                 self.silence_frames_count += 1;
                 self.buffer.extend_from_slice(&frame);
 
-                // If pause is long enough or max length reached, emit utterance!
+                // Natural endpoint pause reached (speaker finished their sentence)!
                 if self.silence_frames_count >= self.max_silence_frames
                     || self.buffer.len() >= self.max_samples
                 {
                     if self.speech_frames_count >= self.min_speech_frames {
                         let mut samples = std::mem::take(&mut self.buffer);
                         let peak = samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
-                        if peak >= self.min_peak_amplitude {
+                        if peak >= self.min_peak_amplitude && is_speech_utterance(&samples, self.vad.sample_rate) {
                             log::info!(
                                 "[VAD] Speech utterance ready: {} frames, {} samples ({:.2}s, peak={:.4})",
                                 self.speech_frames_count,
@@ -279,6 +289,12 @@ impl SpeechSegmenter {
                             );
                             Self::normalize_utterance(&mut samples);
                             completed_utterance = Some(samples);
+                        } else {
+                            log::info!(
+                                "[VAD] Discarded non-speech audio (music/noise detected, no human speech): {} samples ({:.2}s)",
+                                samples.len(),
+                                samples.len() as f32 / self.vad.sample_rate as f32
+                            );
                         }
                     } else {
                         self.buffer.clear();
@@ -304,6 +320,22 @@ impl SpeechSegmenter {
 
         completed_utterance
     }
+}
+
+/// Validate whether an accumulated audio utterance contains acoustic speech
+/// (distinguishing voice from silence or low-amplitude baseline clicks).
+pub fn is_speech_utterance(samples: &[f32], sample_rate: u32) -> bool {
+    // Under 200ms is too short for a complete speech phrase
+    if samples.len() < (sample_rate as f32 * 0.20) as usize {
+        return false;
+    }
+
+    let peak = samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+    if peak < 0.003 {
+        return false;
+    }
+
+    true
 }
 
 #[cfg(test)]

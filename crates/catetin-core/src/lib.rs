@@ -41,6 +41,10 @@ pub mod events {
         pub text: String,
         pub is_final: bool,
         pub confidence: f32,
+        /// If `Some(start_ms)`, this refined event replaces earlier draft captions
+        /// whose `timestamp_ms` falls in `start_ms..=self.timestamp_ms`.
+        #[serde(default)]
+        pub replaces_since_ms: Option<u64>,
     }
 }
 

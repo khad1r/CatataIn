@@ -10,8 +10,8 @@ name = "catetin"
 path = "src/main.rs"
 
 [features]
-default = ["whisper"]
-whisper = ["catetin-core/whisper"]
+default = ["transducer"]
+transducer = ["catetin-core/transducer"]
 
 [dependencies]
 catetin-core = { path = "../catetin-core" }

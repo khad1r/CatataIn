@@ -36,37 +36,41 @@ ENV CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc-posix \
 
 WORKDIR /workspace
 
-# Cache dependency layer
+# Cache dependency layer (pre-fetch crates and apply whisper.cpp MinGW SIMD/static patches once)
 COPY Cargo.toml Cargo.lock* ./
 COPY crates/catetin-core/Cargo.toml ./crates/catetin-core/
 COPY crates/catetin-cli/Cargo.toml ./crates/catetin-cli/
 COPY crates/catetin-wasm/Cargo.toml ./crates/catetin-wasm/
 
+RUN mkdir -p crates/catetin-core/src crates/catetin-cli/src crates/catetin-wasm/src \
+    && echo "" > crates/catetin-core/src/lib.rs \
+    && echo "fn main() {}" > crates/catetin-cli/src/main.rs \
+    && echo "" > crates/catetin-wasm/src/lib.rs \
+    && cargo build --release -p catetin-cli \
+    && CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-g++-posix \
+       RUSTFLAGS="-C target-feature=+avx,+avx2,+fma,+f16c -C link-arg=-static -C link-arg=-static-libgcc -C link-arg=-static-libstdc++ -C link-arg=-Wl,--stack,16777216" \
+       cargo build --target x86_64-pc-windows-gnu --release -p catetin-cli \
+    && cargo build --target wasm32-unknown-unknown --release -p catetin-wasm \
+    && rm -rf crates/*/src target/release/deps/catetin* target/release/deps/libcatetin* \
+       target/x86_64-pc-windows-gnu/release/deps/catetin* target/x86_64-pc-windows-gnu/release/deps/libcatetin* \
+       target/wasm32-unknown-unknown/release/deps/catetin* target/wasm32-unknown-unknown/release/deps/libcatetin*
+
 # Copy workspace source files
 COPY crates ./crates
 
-# 1. Run unit tests
-RUN cargo test -p catetin-core --no-default-features
+# 1. Run unit tests (offline using cached registry)
+RUN cargo test --offline -p catetin-core --no-default-features
 
-# 2. Build native Linux binary
-RUN cargo build --release -p catetin-cli
-
-# 3. Patch whisper.cpp/ggml CMakeLists on MinGW to keep 'lib' prefix for static libraries (rustc expects libggml.a),
-# enable AVX/AVX2/FMA/F16C SIMD instructions (disabled by default when CMAKE_CROSSCOMPILING=TRUE),
-# and force 100% static C++ runtime linkage into the single .exe binary
-RUN grep -rn "CMAKE_STATIC_LIBRARY_PREFIX" /usr/local/cargo/registry/src/ || true \
-    && find /usr/local/cargo/registry/src/ -name CMakeLists.txt -exec sed -i 's/set(CMAKE_STATIC_LIBRARY_PREFIX "")//g' {} + \
-    && find /usr/local/cargo/registry/src/ -path "*whisper.cpp*CMakeLists.txt" -exec sed -i '1i add_compile_options(-O3 -mavx -mavx2 -mfma -mf16c -mstackrealign)' {} + \
-    && find /usr/local/cargo/registry/src/ -name build.rs -exec sed -i 's/target.contains("msvc")/target.contains("windows")/g' {} + \
-    && mv /usr/lib/gcc/x86_64-w64-mingw32/12-posix/libstdc++.dll.a /usr/lib/gcc/x86_64-w64-mingw32/12-posix/libstdc++.dll.a.bak 2>/dev/null || true
+# 2. Build native Linux binary (offline using pre-compiled dependencies)
+RUN cargo build --offline --release -p catetin-cli
 
 # 4. Cross-compile native Windows executable with in-process Whisper (catetin.exe)
 RUN CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-g++-posix \
     RUSTFLAGS="-C target-feature=+avx,+avx2,+fma,+f16c -C link-arg=-static -C link-arg=-static-libgcc -C link-arg=-static-libstdc++ -C link-arg=-Wl,--stack,16777216" \
-    cargo build --target x86_64-pc-windows-gnu --release -p catetin-cli
+    cargo build --offline --target x86_64-pc-windows-gnu --release -p catetin-cli
 
 # 5. Compile WebAssembly binary (catetin_wasm.wasm) for web browsers and frontend UI
-RUN cargo build --target wasm32-unknown-unknown --release -p catetin-wasm
+RUN cargo build --offline --target wasm32-unknown-unknown --release -p catetin-wasm
 
 # ============================================================
 # Stage 2: Host File Exporter
