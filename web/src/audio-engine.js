@@ -1,4 +1,4 @@
-// audio-engine.js - WebAudio Capture & catetin-wasm DSP Driver (Ponytail: native WebAudio + WASM)
+// audio-engine.js - WebAudio Capture & catetin.wasm DSP Driver (Ponytail: native WebAudio + pure Rust WASM)
 
 export class AudioEngine {
   constructor() {
@@ -9,28 +9,74 @@ export class AudioEngine {
     this.isRunning = false;
     this.isPaused = false;
 
+    // WASM Module & DSP Handles
+    this.wasm = null;
+    this.resampler = null;
+    this.segmenter = null;
+    this.clusterer = null;
+
+    // WASM Memory Pointers
+    this.inBufPtr = 0;
+    this.inBufCap = 8192;
+    this.resampleBufPtr = 0;
+    this.resampleBufCap = 16384;
+    this.utteranceBufPtr = 0;
+    this.utteranceBufCap = 160000; // 10s at 16kHz
+
     // Callbacks
     this.onVolume = null;         // (level: number) => void
-    this.onLiveChunk = null;      // (pcm16k: Float32Array) => void
     this.onUtteranceReady = null; // (utterance: Float32Array, isRemote: boolean) => void
     this.onVadSpeaking = null;    // (isSpeaking: boolean) => void
-
-    // Internal VAD state (30ms at 16kHz = 480 samples)
-    this.frameSize = 480;
-    this.frameBuffer = [];
-    this.speechBuffer = [];
-    this.silenceFrames = 0;
     this.isSpeaking = false;
-    this.energyThreshold = 0.015;
-    this.maxSilenceFrames = 20; // ~600ms silence marks end of turn
+  }
+
+  async initWasm(wasmPath = './catetin.wasm') {
+    if (this.wasm) return;
+    try {
+      const response = await fetch(wasmPath);
+      let wasmModule;
+      if (WebAssembly.instantiateStreaming) {
+        try {
+          wasmModule = await WebAssembly.instantiateStreaming(response);
+        } catch {
+          const bytes = await response.arrayBuffer();
+          wasmModule = await WebAssembly.instantiate(bytes);
+        }
+      } else {
+        const bytes = await response.arrayBuffer();
+        wasmModule = await WebAssembly.instantiate(bytes);
+      }
+
+      this.wasm = wasmModule.instance.exports;
+
+      // Allocate WASM memory buffers
+      this.inBufPtr = this.wasm.catetin_alloc_f32(this.inBufCap);
+      this.resampleBufPtr = this.wasm.catetin_alloc_f32(this.resampleBufCap);
+      this.utteranceBufPtr = this.wasm.catetin_alloc_f32(this.utteranceBufCap);
+
+      // Initialize DSP instances
+      this.segmenter = this.wasm.catetin_segmenter_new(16000);
+      this.clusterer = this.wasm.catetin_clusterer_new(0.65, 0.10);
+      console.log("[AudioEngine] catetin.wasm DSP engine successfully initialized.");
+    } catch (err) {
+      console.warn("[AudioEngine] Could not initialize catetin.wasm, falling back to WebAudio JS DSP:", err);
+      this.wasm = null;
+    }
   }
 
   async startMic() {
     if (this.isRunning) return;
 
+    await this.initWasm();
+
     this.audioCtx = new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: 48000
     });
+
+    if (this.wasm) {
+      if (this.resampler) this.wasm.catetin_resampler_free(this.resampler);
+      this.resampler = this.wasm.catetin_resampler_new(this.audioCtx.sampleRate, 1, 16000);
+    }
 
     this.micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -55,7 +101,7 @@ export class AudioEngine {
       const audioTrack = this.tabStream.getAudioTracks()[0];
       if (!audioTrack) {
         this.tabStream.getTracks().forEach(t => t.stop());
-        throw new Error("Pilih opsi 'Share Tab Audio' agar suara meeting tertangkap.");
+        throw new Error("Pilih opsi 'Share Tab Audio' agar suara rapat terdengar.");
       }
 
       if (!this.audioCtx) {
@@ -75,8 +121,6 @@ export class AudioEngine {
 
   _setupPipeline(stream, isRemote) {
     const source = this.audioCtx.createMediaStreamSource(stream);
-    
-    // ScriptProcessorNode (ponytail: native 4096 buffer, no build step needed)
     const bufferSize = 4096;
     const processor = this.audioCtx.createScriptProcessor(bufferSize, 1, 1);
 
@@ -85,24 +129,70 @@ export class AudioEngine {
 
       const inputData = event.inputBuffer.getChannelData(0);
       
-      // 1. Compute RMS Volume for VU Meter
-      let sum = 0;
-      for (let i = 0; i < inputData.length; i++) {
-        sum += inputData[i] * inputData[i];
-      }
-      const rms = Math.sqrt(sum / inputData.length);
-      if (this.onVolume) {
-        this.onVolume(Math.min(1.0, rms * 5.0));
-      }
+      if (this.wasm && this.resampler && this.segmenter) {
+        // --- 100% Native Rust WASM DSP Pipeline ---
+        const memF32 = new Float32Array(this.wasm.memory.buffer);
+        
+        // 1. Copy WebAudio input into WASM buffer
+        const len = Math.min(inputData.length, this.inBufCap);
+        const inOffset = this.inBufPtr / 4;
+        memF32.set(inputData.subarray(0, len), inOffset);
 
-      // 2. Downsample from audioCtx.sampleRate (48k / 44.1k) to 16kHz mono
-      const pcm16k = this._downsampleTo16k(inputData, this.audioCtx.sampleRate);
-      if (this.onLiveChunk) {
-        this.onLiveChunk(pcm16k);
-      }
+        // 2. Resample 48kHz -> 16kHz mono using Rust 5-tap anti-aliasing filter
+        const resampledLen = this.wasm.catetin_resampler_process(
+          this.resampler,
+          this.inBufPtr,
+          len,
+          this.resampleBufPtr,
+          this.resampleBufCap
+        );
 
-      // 3. 30ms VAD Framing & Endpointing
-      this._processVad(pcm16k, isRemote);
+        if (resampledLen > 0) {
+          // 3. RMS Volume calculation for VU meter
+          const rms = this.wasm.catetin_vad_rms(this.resampleBufPtr, resampledLen);
+          if (this.onVolume) {
+            this.onVolume(Math.min(1.0, rms * 5.0));
+          }
+
+          // 4. Feed Rust SpeechSegmenter (adaptive noise floor + hangover + endpointing)
+          const utteranceLen = this.wasm.catetin_segmenter_feed(
+            this.segmenter,
+            this.resampleBufPtr,
+            resampledLen,
+            this.utteranceBufPtr,
+            this.utteranceBufCap
+          );
+
+          // 5. Update speaking state indicator
+          const speaking = this.wasm.catetin_segmenter_is_speaking(this.segmenter) === 1;
+          if (speaking !== this.isSpeaking) {
+            this.isSpeaking = speaking;
+            if (this.onVadSpeaking) this.onVadSpeaking(speaking);
+          }
+
+          // 6. Utterance endpoint reached!
+          if (utteranceLen > 0) {
+            const outOffset = this.utteranceBufPtr / 4;
+            // Refresh memF32 in case memory grew
+            const latestMem = new Float32Array(this.wasm.memory.buffer);
+            const utterance = new Float32Array(utteranceLen);
+            utterance.set(latestMem.subarray(outOffset, outOffset + utteranceLen));
+
+            if (this.onUtteranceReady) {
+              this.onUtteranceReady(utterance, isRemote);
+            }
+          }
+        }
+      } else {
+        // --- Fallback Pure JS DSP ---
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
+        const rms = Math.sqrt(sum / inputData.length);
+        if (this.onVolume) this.onVolume(Math.min(1.0, rms * 5.0));
+
+        const pcm16k = this._jsDownsample(inputData, this.audioCtx.sampleRate);
+        this._jsProcessVad(pcm16k, isRemote);
+      }
     };
 
     source.connect(processor);
@@ -110,72 +200,35 @@ export class AudioEngine {
     this.processor = processor;
   }
 
-  _downsampleTo16k(samples, srcRate) {
+  _jsDownsample(samples, srcRate) {
     if (srcRate === 16000) return samples;
     const ratio = srcRate / 16000;
     const outLength = Math.floor(samples.length / ratio);
     const result = new Float32Array(outLength);
-
     for (let i = 0; i < outLength; i++) {
-      const srcIdx = Math.floor(i * ratio);
-      result[i] = samples[srcIdx];
+      result[i] = samples[Math.floor(i * ratio)];
     }
     return result;
   }
 
-  _processVad(samples, isRemote) {
+  _jsProcessVad(samples, isRemote) {
+    // Basic fallback VAD accumulator
+    if (!this._jsBuf) this._jsBuf = [];
     for (let i = 0; i < samples.length; i++) {
-      this.frameBuffer.push(samples[i]);
-
-      if (this.frameBuffer.length >= this.frameSize) {
-        const frame = this.frameBuffer.splice(0, this.frameSize);
-        
-        let frameEnergy = 0;
-        for (let j = 0; j < frame.length; j++) {
-          frameEnergy += Math.abs(frame[j]);
-        }
-        frameEnergy /= frame.length;
-
-        const isVoice = frameEnergy > this.energyThreshold;
-
-        if (isVoice) {
-          this.silenceFrames = 0;
-          if (!this.isSpeaking) {
-            this.isSpeaking = true;
-            if (this.onVadSpeaking) this.onVadSpeaking(true);
-          }
-          this.speechBuffer.push(...frame);
-        } else {
-          if (this.isSpeaking) {
-            this.silenceFrames++;
-            this.speechBuffer.push(...frame);
-
-            // Endpoint detected (> 600ms silence after speech)
-            if (this.silenceFrames > this.maxSilenceFrames) {
-              this.isSpeaking = false;
-              if (this.onVadSpeaking) this.onVadSpeaking(false);
-
-              // Minimum 0.5s speech length to filter coughs/clicks
-              if (this.speechBuffer.length >= 8000) {
-                const utterance = new Float32Array(this.speechBuffer);
-                if (this.onUtteranceReady) {
-                  this.onUtteranceReady(utterance, isRemote);
-                }
-              }
-              this.speechBuffer = [];
-              this.silenceFrames = 0;
-            }
-          }
-        }
+      this._jsBuf.push(samples[i]);
+    }
+    if (this._jsBuf.length >= 16000 * 3) { // 3-second chunk
+      const chunk = new Float32Array(this._jsBuf);
+      this._jsBuf = [];
+      if (this.onUtteranceReady) {
+        this.onUtteranceReady(chunk, isRemote);
       }
     }
   }
 
   pause() {
     this.isPaused = true;
-    this.frameBuffer = [];
-    this.speechBuffer = [];
-    this.isSpeaking = false;
+    this.flushUtterance();
     if (this.onVadSpeaking) this.onVadSpeaking(false);
     if (this.onVolume) this.onVolume(0);
   }
@@ -184,9 +237,30 @@ export class AudioEngine {
     this.isPaused = false;
   }
 
+  flushUtterance() {
+    if (this.wasm && this.segmenter) {
+      const utteranceLen = this.wasm.catetin_segmenter_flush(
+        this.segmenter,
+        this.utteranceBufPtr,
+        this.utteranceBufCap
+      );
+      if (utteranceLen > 0) {
+        const outOffset = this.utteranceBufPtr / 4;
+        const latestMem = new Float32Array(this.wasm.memory.buffer);
+        const utterance = new Float32Array(utteranceLen);
+        utterance.set(latestMem.subarray(outOffset, outOffset + utteranceLen));
+        if (this.onUtteranceReady) {
+          this.onUtteranceReady(utterance, false);
+        }
+      }
+    }
+  }
+
   stop() {
     this.isRunning = false;
     this.isPaused = false;
+    this.flushUtterance();
+
     if (this.micStream) {
       this.micStream.getTracks().forEach(t => t.stop());
       this.micStream = null;
@@ -199,9 +273,50 @@ export class AudioEngine {
       this.audioCtx.close();
       this.audioCtx = null;
     }
-    this.frameBuffer = [];
-    this.speechBuffer = [];
     if (this.onVolume) this.onVolume(0);
     if (this.onVadSpeaking) this.onVadSpeaking(false);
+  }
+
+  isHallucination(text) {
+    if (!this.wasm) return false;
+    const enc = new TextEncoder().encode(text);
+    const ptr = this.wasm.catetin_alloc_u8(enc.length);
+    new Uint8Array(this.wasm.memory.buffer).set(enc, ptr);
+    const res = this.wasm.catetin_is_hallucination(ptr, enc.length) === 1;
+    this.wasm.catetin_free_u8(ptr, enc.length);
+    return res;
+  }
+
+  formatUtterance(text, prompt = '') {
+    if (!this.wasm) return text.trim();
+    const encText = new TextEncoder().encode(text);
+    const encPrompt = new TextEncoder().encode(prompt);
+
+    const ptrText = this.wasm.catetin_alloc_u8(encText.length);
+    new Uint8Array(this.wasm.memory.buffer).set(encText, ptrText);
+
+    const ptrPrompt = this.wasm.catetin_alloc_u8(encPrompt.length);
+    new Uint8Array(this.wasm.memory.buffer).set(encPrompt, ptrPrompt);
+
+    const outCap = encText.length + 64;
+    const outPtr = this.wasm.catetin_alloc_u8(outCap);
+
+    const written = this.wasm.catetin_format_utterance(
+      ptrText, encText.length,
+      ptrPrompt, encPrompt.length,
+      outPtr, outCap
+    );
+
+    let result = text.trim();
+    if (written > 0) {
+      const slice = new Uint8Array(this.wasm.memory.buffer, outPtr, written);
+      result = new TextDecoder().decode(slice);
+    }
+
+    this.wasm.catetin_free_u8(ptrText, encText.length);
+    this.wasm.catetin_free_u8(ptrPrompt, encPrompt.length);
+    this.wasm.catetin_free_u8(outPtr, outCap);
+
+    return result;
   }
 }

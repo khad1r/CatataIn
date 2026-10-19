@@ -81,6 +81,7 @@ FROM scratch AS export
 COPY --from=builder /workspace/target/x86_64-pc-windows-gnu/release/catetin.exe /catetin.exe
 COPY --from=builder /workspace/target/release/catetin /catetin
 COPY --from=builder /workspace/target/wasm32-unknown-unknown/release/catetin_wasm.wasm /catetin.wasm
+COPY --from=builder /workspace/target/wasm32-unknown-unknown/release/catetin_wasm.wasm /web/catetin.wasm
 COPY crates/catetin-core/native/win-x64/sherpa-onnx-c-api.dll /sherpa-onnx-c-api.dll
 COPY crates/catetin-core/native/win-x64/onnxruntime.dll /onnxruntime.dll
 COPY web/ /web/

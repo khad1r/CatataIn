@@ -1,4 +1,4 @@
-// app.js - Main Application Coordinator (Ponytail: native modular ES)
+// app.js - Main Application Coordinator (Ponytail: clean, no jargon, zero mocks)
 
 import { AudioEngine } from './audio-engine.js';
 import { OpfsModelStorage } from './opfs-storage.js';
@@ -21,6 +21,9 @@ class CatetinApp {
     this.initAudioHooks();
     this.initSpeechFallback();
     this.initHotkeys();
+
+    // Silently initialize WASM DSP engine
+    this.audio.initWasm('./catetin.wasm').catch(() => {});
   }
 
   initDOM() {
@@ -43,12 +46,10 @@ class CatetinApp {
   }
 
   initAudioHooks() {
-    // 1. Live VU Meter Level
     this.audio.onVolume = (level) => {
       if (this.vuMeter) this.vuMeter.setLevel(level);
     };
 
-    // 2. VAD Speaking indicator
     this.audio.onVadSpeaking = (speaking) => {
       if (this.statusVad) {
         if (speaking) {
@@ -59,29 +60,25 @@ class CatetinApp {
       }
     };
 
-    // 3. Spoken Utterance Finished (Endpointed by VAD)
     this.audio.onUtteranceReady = async (utterance, isRemote) => {
       const speaker = isRemote ? 'Pembicara 1' : 'Anda';
       const timeStr = this._formatTime(new Date());
 
-      // Attempt ONNX Pass 2 Whisper inference if model is ready
-      let transcribedText = null;
       if (this.onnx.isReady) {
-        transcribedText = await this.onnx.transcribeUtterance(utterance);
-      }
-
-      // If speech recognizer provided text via interim or ONNX
-      if (this.lastFinalText) {
-        this.transcriptView.addSegment(speaker, this.lastFinalText, timeStr);
-        this.lastFinalText = '';
-        this.transcriptView.setLiveText('');
-        this.notesView.updateInsights(this.transcriptView.getSegments());
+        const transcribedText = await this.onnx.transcribeUtterance(utterance);
+        if (transcribedText) {
+          if (this.audio.isHallucination(transcribedText)) return;
+          const cleanText = this.audio.formatUtterance(transcribedText);
+          if (cleanText) {
+            this.transcriptView.addSegment(speaker, cleanText, timeStr);
+            this.notesView.updateInsights(this.transcriptView.getSegments());
+          }
+        }
       }
     };
   }
 
   initSpeechFallback() {
-    // Zero-config speech recognition when running standalone
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRec) {
       this.rec = new SpeechRec();
@@ -90,16 +87,16 @@ class CatetinApp {
       this.rec.lang = 'id-ID';
 
       this.rec.onresult = (e) => {
-        if (this.isPaused) return;
+        if (this.isPaused || this.onnx.isReady) return;
         let interim = '';
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (e.results[i].isFinal) {
-            this.lastFinalText = e.results[i][0].transcript.trim();
+            const rawText = e.results[i][0].transcript.trim();
+            const cleanText = this.audio.formatUtterance(rawText);
             const timeStr = this._formatTime(new Date());
-            this.transcriptView.addSegment(this.activeSpeaker, this.lastFinalText, timeStr);
+            this.transcriptView.addSegment(this.activeSpeaker, cleanText, timeStr);
             this.transcriptView.setLiveText('');
             this.notesView.updateInsights(this.transcriptView.getSegments());
-            this.lastFinalText = '';
           } else {
             interim += e.results[i][0].transcript;
           }
@@ -110,7 +107,7 @@ class CatetinApp {
       };
 
       this.rec.onend = () => {
-        if (this.isRecording && !this.isPaused) {
+        if (this.isRecording && !this.isPaused && !this.onnx.isReady) {
           try { this.rec.start(); } catch (_) {}
         }
       };
@@ -119,7 +116,6 @@ class CatetinApp {
 
   initHotkeys() {
     window.addEventListener('keydown', (e) => {
-      // Ignore if typing inside input
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       if (e.code === 'Space' || e.key === 'p' || e.key === 'P') {
@@ -140,7 +136,7 @@ class CatetinApp {
       }
       this.isRecording = false;
       this.isPaused = false;
-      this.btnStart.textContent = '🎙 Mulai';
+      this.btnStart.textContent = 'Mulai';
       this.btnStart.classList.remove('active');
       this.btnPause.disabled = true;
       this.transcriptView.setLiveText('');
@@ -150,12 +146,12 @@ class CatetinApp {
 
     try {
       await this.audio.startMic();
-      if (this.rec) {
+      if (!this.onnx.isReady && this.rec) {
         try { this.rec.start(); } catch (_) {}
       }
       this.isRecording = true;
       this.isPaused = false;
-      this.btnStart.textContent = '⏹ Stop';
+      this.btnStart.textContent = 'Stop';
       this.btnStart.classList.add('active');
       this.btnPause.disabled = false;
     } catch (err) {
@@ -181,15 +177,15 @@ class CatetinApp {
       if (this.rec) {
         try { this.rec.stop(); } catch (_) {}
       }
-      this.btnPause.textContent = '▶ Lanjut';
+      this.btnPause.textContent = 'Lanjut';
       this.btnPause.classList.add('active');
       this.transcriptView.setLiveText('');
     } else {
       this.audio.resume();
-      if (this.rec) {
+      if (!this.onnx.isReady && this.rec) {
         try { this.rec.start(); } catch (_) {}
       }
-      this.btnPause.textContent = '⏸ Jeda';
+      this.btnPause.textContent = 'Jeda';
       this.btnPause.classList.remove('active');
     }
   }
@@ -197,7 +193,7 @@ class CatetinApp {
   saveMarkdown() {
     const segments = this.transcriptView.getSegments();
     if (segments.length === 0) {
-      alert("Belum ada transkrip untuk disimpan.");
+      alert("Belum ada transkrip.");
       return;
     }
 
@@ -243,7 +239,7 @@ class CatetinApp {
   }
 
   clearAll() {
-    if (confirm("Kosongkan transkrip dan catatan rapat?")) {
+    if (confirm("Hapus semua catatan?")) {
       this.transcriptView.clear();
       this.notesView.clear();
     }
@@ -258,7 +254,6 @@ class CatetinApp {
 window.addEventListener('DOMContentLoaded', () => {
   window.app = new CatetinApp();
 
-  // Register PWA service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }

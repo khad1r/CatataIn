@@ -94,15 +94,15 @@ export class TranscriptView extends HTMLElement {
 
     const header = document.createElement('div');
     header.className = 'header';
-    header.textContent = 'TRANSKRIP';
+    header.textContent = 'Transkrip';
 
     this.liveBar = document.createElement('div');
     this.liveBar.className = 'live-bar';
-    this.liveBar.innerHTML = `<span class="live-tag">⚡ LIVE:</span><span class="live-text"></span>`;
+    this.liveBar.innerHTML = `<span class="live-text"></span>`;
 
     this.feed = document.createElement('div');
     this.feed.className = 'feed';
-    this.feed.innerHTML = `<div class="empty">Belum ada percakapan. Tekan <strong>Mulai</strong> untuk mencatat rapat.</div>`;
+    this.feed.innerHTML = `<div class="empty">Belum ada transkrip.</div>`;
 
     this.shadowRoot.appendChild(header);
     this.shadowRoot.appendChild(this.liveBar);
@@ -149,7 +149,7 @@ export class TranscriptView extends HTMLElement {
   clear() {
     this.segments = [];
     this.setLiveText('');
-    this.feed.innerHTML = `<div class="empty">Belum ada percakapan. Tekan <strong>Mulai</strong> untuk mencatat rapat.</div>`;
+    this.feed.innerHTML = `<div class="empty">Belum ada transkrip.</div>`;
   }
 
   getSegments() {

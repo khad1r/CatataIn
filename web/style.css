@@ -7,7 +7,7 @@
 body {
   background-color: #121212;
   color: #e0e0e0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: system-ui, -apple-system, sans-serif;
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -15,9 +15,9 @@ body {
 }
 
 header {
-  background-color: #1a1a1a;
-  border-bottom: 1px solid #2a2a2a;
-  padding: 10px 16px;
+  background-color: #181818;
+  border-bottom: 1px solid #282828;
+  padding: 8px 16px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -31,49 +31,47 @@ header {
 }
 
 .brand h1 {
-  font-size: 1.1rem;
-  font-weight: 700;
+  font-size: 1rem;
+  font-weight: 600;
   color: #fff;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.2px;
 }
 
 .vad-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background-color: #444;
-  transition: all 0.15s ease;
+  background-color: #333;
+  transition: background-color 0.1s ease;
 }
 
 .vad-dot.active {
-  background-color: #34d399;
-  box-shadow: 0 0 8px #34d399;
+  background-color: #22c55e;
 }
 
 .controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .btn {
-  padding: 6px 12px;
-  font-size: 0.85rem;
-  font-weight: 600;
+  padding: 5px 12px;
+  font-size: 0.82rem;
+  font-weight: 500;
   background-color: #242424;
-  color: #e0e0e0;
+  color: #ddd;
   border: 1px solid #333;
   border-radius: 4px;
   cursor: pointer;
-  transition: background 0.1s ease;
 }
 
 .btn:hover:not(:disabled) {
-  background-color: #333;
+  background-color: #2e2e2e;
 }
 
 .btn:disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
@@ -96,20 +94,20 @@ header {
 .btn-subtle {
   background: transparent;
   border-color: transparent;
-  color: #888;
+  color: #777;
 }
 
 .btn-subtle:hover {
-  background: #222;
-  color: #fff;
+  background: #202020;
+  color: #bbb;
 }
 
 main {
   flex: 1;
   display: grid;
   grid-template-columns: 65% 35%;
-  gap: 12px;
-  padding: 12px;
+  gap: 8px;
+  padding: 8px;
   overflow: hidden;
 }
 

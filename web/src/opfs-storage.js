@@ -1,4 +1,4 @@
-// opfs-storage.js - Origin Private File System Model Cache Manager (Ponytail: zero external dependencies)
+// opfs-storage.js - Origin Private File System Model & Cache Manager (Ponytail: native browser OPFS)
 
 export class OpfsModelStorage {
   constructor() {
@@ -33,15 +33,22 @@ export class OpfsModelStorage {
     }
   }
 
-  async saveModel(filename, arrayBuffer) {
+  async saveModel(filename, arrayBufferOrStream) {
     await this.init();
     if (this.hasOpfs && this.modelsDir) {
       const fileHandle = await this.modelsDir.getFileHandle(filename, { create: true });
       const writable = await fileHandle.createWritable();
-      await writable.write(arrayBuffer);
-      await writable.close();
+      if (arrayBufferOrStream instanceof ReadableStream) {
+        await arrayBufferOrStream.pipeTo(writable);
+      } else {
+        await writable.write(arrayBufferOrStream);
+        await writable.close();
+      }
     } else {
-      await this._idbSave(filename, arrayBuffer);
+      const buffer = arrayBufferOrStream instanceof ArrayBuffer
+        ? arrayBufferOrStream
+        : await new Response(arrayBufferOrStream).arrayBuffer();
+      await this._idbSave(filename, buffer);
     }
   }
 
@@ -56,20 +63,62 @@ export class OpfsModelStorage {
     }
   }
 
+  async deleteModel(filename) {
+    await this.init();
+    if (this.hasOpfs && this.modelsDir) {
+      try {
+        await this.modelsDir.removeEntry(filename);
+        return true;
+      } catch {
+        return false;
+      }
+    } else {
+      return await this._idbDelete(filename);
+    }
+  }
+
   async listModels() {
     await this.init();
     const result = [];
     if (this.hasOpfs && this.modelsDir) {
       for await (const [name, handle] of this.modelsDir.entries()) {
         if (handle.kind === 'file') {
-          result.push(name);
+          const file = await handle.getFile();
+          result.push({ name, size: file.size, lastModified: file.lastModified });
         }
       }
     }
     return result;
   }
 
-  // --- IndexedDB Fallback (only if OPFS is not supported) ---
+  async importFromDirectory(dirHandle) {
+    await this.init();
+    const imported = [];
+    for await (const [name, handle] of dirHandle.entries()) {
+      if (handle.kind === 'file' && (name.endsWith('.onnx') || name.endsWith('.bin') || name.endsWith('.json') || name.endsWith('.txt'))) {
+        const file = await handle.getFile();
+        const buffer = await file.arrayBuffer();
+        await this.saveModel(name, buffer);
+        imported.push(name);
+      }
+    }
+    return imported;
+  }
+
+  async getStorageUsage() {
+    if (navigator.storage && navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      return {
+        usage: est.usage || 0,
+        quota: est.quota || 0,
+        usageMB: ((est.usage || 0) / (1024 * 1024)).toFixed(1),
+        quotaMB: ((est.quota || 0) / (1024 * 1024)).toFixed(1),
+      };
+    }
+    return null;
+  }
+
+  // --- IndexedDB Fallback (only for older browsers without OPFS) ---
   _openIdb() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open('catetin_opfs_fallback', 1);
@@ -111,6 +160,17 @@ export class OpfsModelStorage {
       const req = store.get(filename);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
+    });
+  }
+
+  async _idbDelete(filename) {
+    const db = await this._openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('models', 'readwrite');
+      const store = tx.objectStore('models');
+      const req = store.delete(filename);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
     });
   }
 }

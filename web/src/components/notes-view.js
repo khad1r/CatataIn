@@ -79,18 +79,18 @@ export class NotesView extends HTMLElement {
 
     const header = document.createElement('div');
     header.className = 'header';
-    header.textContent = 'CATATAN';
+    header.textContent = 'Catatan';
 
     this.content = document.createElement('div');
     this.content.className = 'content';
     this.content.innerHTML = `
       <div>
-        <div class="section-title">TOPIK</div>
-        <ul id="topic-list"><li class="empty-note">Topik terdeteksi otomatis saat ada percakapan.</li></ul>
+        <div class="section-title">Topik</div>
+        <ul id="topic-list"><li class="empty-note">-</li></ul>
       </div>
       <div>
-        <div class="section-title">TINDAK LANJUT</div>
-        <ul id="action-list"><li class="empty-note">Action items akan muncul di sini.</li></ul>
+        <div class="section-title">Tugas</div>
+        <ul id="action-list"><li class="empty-note">-</li></ul>
       </div>
     `;
 
@@ -133,13 +133,13 @@ export class NotesView extends HTMLElement {
     const actionList = this.shadowRoot.getElementById('action-list');
 
     if (this.topics.length === 0) {
-      topicList.innerHTML = `<li class="empty-note">Topik terdeteksi otomatis saat ada percakapan.</li>`;
+      topicList.innerHTML = `<li class="empty-note">-</li>`;
     } else {
       topicList.innerHTML = this.topics.map(t => `<li class="topic-item">${t}</li>`).join('');
     }
 
     if (this.actions.length === 0) {
-      actionList.innerHTML = `<li class="empty-note">Action items akan muncul di sini.</li>`;
+      actionList.innerHTML = `<li class="empty-note">-</li>`;
     } else {
       actionList.innerHTML = this.actions.map(a => `
         <li class="action-item">

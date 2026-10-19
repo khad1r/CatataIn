@@ -135,3 +135,18 @@ Dokumen ini mencatat seluruh keputusan arsitektur, filosofi CLI flags, dan atura
   - Audio tab rapat (`getDisplayMedia`) dilabeli sebagai `[Pembicara 1]`, `[2]`, dst.
 - **Ekspor Dokumen:**
   - Tombol simpan langsung menghasilkan unduhan `notulensi.md` yang 100% kompatibel dengan format catatan CLI Catetin.
+
+---
+
+## 10. Implementasi Fitur Web PWA Tanpa Mock (End-to-End Real Implementation)
+- **Koneksi catetin.wasm C-ABI Langsung:**
+  - `crates/catetin-wasm/src/lib.rs` mengekspor fungsi C-ABI native (`catetin_resampler_*`, `catetin_segmenter_*`, `catetin_vad_*`, `catetin_clusterer_*`, `catetin_is_hallucination`, `catetin_format_utterance`, `catetin_alloc_*`, `catetin_free_*`).
+  - `web/src/audio-engine.js` memuat `catetin.wasm` langsung via WebAssembly standar tanpa bundler. Resampling 48k->16k mono menggunakan filter anti-aliasing Hann-window Rust, VAD adaptif dan pemotong turn bicara menggunakan Rust `SpeechSegmenter`.
+- **Eksekusi In-Browser ASR Nyata (ONNX WebGPU / WASM SIMD):**
+  - Menggunakan Transformers.js pipeline untuk model Whisper Multilingual INT8 (`Xenova/whisper-tiny`), mengeksekusi ONNX runtime langsung di WebGPU / WASM browser dengan progress tracking unduhan berkas asli (0-100%).
+  - Dilengkapi filter halusinasi Rust dan pemformatan kalimat otomatis.
+- **Penyimpanan OPFS & Impor Folder Lokal:**
+  - `web/src/opfs-storage.js` mengelola model di Origin Private File System dengan dukungan streaming write dan impor berkas model ONNX langsung dari folder lokal pengguna via `window.showDirectoryPicker()`.
+- **Build Container Docker (Zero Host Dependencies):**
+  - Menghindari ketergantungan pada path cargo lokal di host pengguna. Seluruh binari (`catetin.exe`, `catetin`, `catetin.wasm`, serta folder `web/`) dikompilasi dan diekspor seragam melalui perintah `docker build --target export --output dist/ .`.
+
