@@ -12,23 +12,98 @@
   <header>
     <div class="brand">
       <h1>Catetin</h1>
-      <span id="status-vad" class="vad-dot"></span>
+      <span id="status-vad" class="vad-dot" title="Deteksi Suara VAD"></span>
+      <span id="bootstrap-status" class="bootstrap-badge warming" title="Status Kesiapan Engine">Menyiapkan AI...</span>
     </div>
 
     <div class="controls">
       <vu-meter></vu-meter>
-      <button id="btn-start" class="btn btn-primary">Mulai</button>
+      <button id="btn-session" class="btn btn-primary" disabled>Menyiapkan...</button>
+      <button id="btn-mic" class="btn">Mic: Aktif</button>
       <button id="btn-tab" class="btn">Tab Audio</button>
       <button id="btn-pause" class="btn" disabled>Jeda</button>
       <button id="btn-save" class="btn">Simpan</button>
       <button id="btn-clear" class="btn btn-subtle" title="Hapus">Hapus</button>
+      <button id="btn-settings" class="btn btn-subtle" title="Pengaturan">⚙️</button>
     </div>
   </header>
 
-  <main>
-    <transcript-view></transcript-view>
-    <notes-view></notes-view>
+  <main id="main-layout">
+    <transcript-view id="transcript-pane"></transcript-view>
+    <notes-view id="notes-pane"></notes-view>
   </main>
+
+  <catetin-telemetry id="telemetry-pane"></catetin-telemetry>
+
+  <!-- Modal Pengaturan (Single-screen modal dialog) -->
+  <dialog id="modal-settings" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Pengaturan</h2>
+        <button id="btn-close-modal" class="btn btn-subtle">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="setting-language">Bahasa</label>
+          <select id="setting-language" class="select-input">
+            <option value="id" selected>Bahasa Indonesia</option>
+            <option value="en">English</option>
+            <option value="auto">Otomatis</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="setting-pass2-engine">Engine Pass 2 (Turn Finalizer)</label>
+          <select id="setting-pass2-engine" class="select-input">
+            <option value="webgpu" selected>WebGPU (Akselerasi GPU Shader)</option>
+            <option value="wasm-simd">Multi-Thread CPU SIMD (WASM 8-Core)</option>
+            <option value="webnn">WebNN (OS DirectML / NPU Native)</option>
+            <option value="direct-ort">Direct ORT Web (Local Whisper INT8 - Zero CDN)</option>
+            <option value="wasm-ggml">whisper.cpp GGML WASM (Local Q8_0 - 1:1 CLI)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="setting-whisper">Model Whisper (Pass 2)</label>
+          <select id="setting-whisper" class="select-input">
+            <option value="Xenova/whisper-tiny">Whisper Tiny (39 MB, Cepat)</option>
+            <option value="Xenova/whisper-base" selected>Whisper Base (140 MB, Rekomendasi)</option>
+            <option value="Xenova/whisper-small">Whisper Small (460 MB, Akurat)</option>
+            <option value="none">Nonaktifkan</option>
+            <option value="custom">Model Kustom (HuggingFace ID)...</option>
+          </select>
+        </div>
+
+        <div id="group-custom-model" class="form-group" style="display: none;">
+          <label for="input-custom-model">ID Model Hugging Face</label>
+          <input type="text" id="input-custom-model" class="text-input" placeholder="contoh: openai/whisper-base">
+        </div>
+
+        <div class="form-group">
+          <label for="setting-transducer">Model Transducer (Pass 1 Streaming)</label>
+          <select id="setting-transducer" class="select-input">
+            <option value="id" selected>Zipformer Indonesia (sherpa-onnx)</option>
+            <option value="en">Zipformer English (sherpa-onnx)</option>
+            <option value="none">Nonaktifkan</option>
+          </select>
+        </div>
+
+        <div class="form-group checkbox-group">
+          <label>
+            <input type="checkbox" id="setting-hide-notes">
+            Sembunyikan panel catatan (fokus transkrip)
+          </label>
+        </div>
+
+        <div id="model-status-text" class="status-info"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btn-save-settings" class="btn btn-primary">Simpan</button>
+      </div>
+    </div>
+  </dialog>
 
   <script type="module" src="src/app.js"></script>
 </body>

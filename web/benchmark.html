@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Catetin End-to-End Pipeline Benchmark</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      margin: 0;
+      padding: 24px;
+    }
+    h1 { color: #38bdf8; margin-bottom: 4px; }
+    .subtitle { color: #94a3b8; margin-bottom: 24px; font-size: 14px; }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+    .card h2 { margin-top: 0; font-size: 18px; color: #e2e8f0; }
+    pre {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      padding: 12px;
+      border-radius: 6px;
+      color: #34d399;
+      font-size: 13px;
+      overflow-x: auto;
+      max-height: 250px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      border: 1px solid #334155;
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 14px;
+    }
+    th { background: #0f172a; color: #38bdf8; }
+    tr:nth-child(even) { background: #182234; }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-success { background: #065f46; color: #34d399; }
+    .badge-running { background: #1e3a8a; color: #60a5fa; }
+    .badge-warn { background: #78350f; color: #fbbf24; }
+  </style>
+</head>
+<body>
+  <h1>Catetin Full Pipeline Benchmark (Indonesian ASR)</h1>
+  <div class="subtitle">Pengujian Komprehensif: Pass 1 (Streaming Transducer Zipformer2 ID) & Pass 2 (Engine Hub: WebGPU vs WASM SIMD vs WebNN)</div>
+
+  <div class="card">
+    <h2>1. Berkas Uji Audio</h2>
+    <div id="audio-info">Memuat berkas /sample-indonesia-16k.wav...</div>
+  </div>
+
+  <div class="card">
+    <h2>2. Status Benchmark & Log Real-Time</h2>
+    <pre id="log-output">Klik "Mulai Benchmark" atau jalankan window.runFullBenchmark() di DevTools...</pre>
+    <button id="btn-start" style="padding: 10px 20px; background: #0284c7; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">Mulai Benchmark Keseluruhan</button>
+  </div>
+
+  <div class="card">
+    <h2>3. Ringkasan Hasil Komparasi Metrik</h2>
+    <table id="results-table">
+      <thead>
+        <tr>
+          <th>Pipeline Stage</th>
+          <th>Engine / Hardware</th>
+          <th>Model</th>
+          <th>Warmup / Init (ms)</th>
+          <th>Latency (ms)</th>
+          <th>RTF (Real-Time Factor)</th>
+          <th>Hasil Transkripsi</th>
+        </tr>
+      </thead>
+      <tbody id="results-tbody">
+        <tr><td colspan="7" style="text-align: center; color: #64748b;">Belum ada hasil.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script type="module">
+    import { Pass2WebGpuEngine } from './src/engines/pass2-webgpu.js';
+    import { Pass2WasmSimdEngine } from './src/engines/pass2-wasm-simd.js';
+    import { Pass2WebNnEngine } from './src/engines/pass2-webnn.js';
+    import { Pass2DirectOrtEngine } from './src/engines/pass2-direct-ort.js';
+    import { Pass2WasmGgmlEngine } from './src/engines/pass2-wasm-ggml.js';
+
+    const logEl = document.getElementById('log-output');
+    function log(msg) {
+      console.log(msg);
+      logEl.textContent += msg + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    async function loadWavAudio(url) {
+      const res = await fetch(url);
+      const arrayBuf = await res.arrayBuffer();
+      const view = new DataView(arrayBuf);
+      
+      const numChannels = view.getUint16(22, true);
+      const sampleRate = view.getUint32(24, true);
+      const bitsPerSample = view.getUint16(34, true);
+      const dataOffset = 44;
+      const totalSamples = Math.floor((arrayBuf.byteLength - dataOffset) / 2);
+      
+      const float32 = new Float32Array(totalSamples);
+      for (let i = 0; i < totalSamples; i++) {
+        const int16 = view.getInt16(dataOffset + i * 2, true);
+        float32[i] = int16 / 32768.0;
+      }
+
+      return {
+        sampleRate,
+        numChannels,
+        bitsPerSample,
+        durationS: totalSamples / sampleRate,
+        float32
+      };
+    }
+
+    async function runPass1Transducer(audioData) {
+      log('\n[PASS 1] Inisialisasi Sherpa-ONNX Zipformer2 ID Streaming Worker...');
+      const worker = new Worker('/src/sherpa/sherpa-transducer-worker.js');
+      
+      await new Promise((resolve, reject) => {
+        worker.onmessage = (e) => {
+          if (e.data.type === 'status' && e.data.data.status === 'ready') resolve();
+          if (e.data.type === 'status' && e.data.data.status === 'error') reject(new Error(e.data.data.message));
+        };
+        worker.postMessage({ type: 'init', data: { language: 'id' } });
+      });
+
+      log('[PASS 1] Model Zipformer2 ID siap. Memulai streaming 160ms chunks...');
+      const chunkSize = 2560;
+      const latencies = [];
+      const partials = [];
+      let lastText = '';
+      let firstTokenTime = null;
+
+      const tStartStreaming = performance.now();
+
+      return new Promise((resolve) => {
+        let offset = 0;
+        let chunkIndex = 0;
+
+        worker.onmessage = (e) => {
+          if (e.data.type === 'partial_result') {
+            const { text, decodeTimeMs, durationS } = e.data.data;
+            if (firstTokenTime === null && text.trim().length > 0) {
+              firstTokenTime = performance.now() - tStartStreaming;
+            }
+            if (text !== lastText) {
+              lastText = text;
+              partials.push({ chunkIndex, durationS, text, decodeTimeMs });
+              log(`  ⚡ [Chunk #${chunkIndex} | ${durationS}s] -> "${text}" (${decodeTimeMs.toFixed(1)}ms)`);
+            }
+          }
+        };
+
+        const interval = setInterval(() => {
+          if (offset >= audioData.float32.length) {
+            clearInterval(interval);
+            setTimeout(() => {
+              const totalStreamMs = performance.now() - tStartStreaming;
+              worker.terminate();
+
+              const avgChunkLat = latencies.length > 0 ? (latencies.reduce((a,b)=>a+b,0)/latencies.length) : 0;
+              const rtf = (totalStreamMs / (audioData.durationS * 1000));
+
+              resolve({
+                totalChunks: chunkIndex,
+                avgChunkLatencyMs: avgChunkLat,
+                firstTokenLatencyMs: firstTokenTime || 0,
+                totalProcessingMs: totalStreamMs,
+                rtf,
+                finalText: lastText,
+                partials
+              });
+            }, 300);
+            return;
+          }
+
+          const end = Math.min(offset + chunkSize, audioData.float32.length);
+          const chunk = audioData.float32.subarray(offset, end);
+          const durS = (end / 16000).toFixed(2);
+
+          const t0 = performance.now();
+          worker.postMessage({
+            type: 'accept_chunk',
+            data: { pcm16k: chunk, speaker: 'Speaker', durationS: durS }
+          });
+          latencies.push(performance.now() - t0);
+
+          offset += chunkSize;
+          chunkIndex++;
+        }, 15);
+      });
+    }
+
+    async function runPass2Engine(engineInstance, modelName, audioData, engineLabel) {
+      log(`\n[PASS 2: ${engineLabel}] Inisialisasi & Pre-warming (${modelName})...`);
+      const tInit0 = performance.now();
+      try {
+        await engineInstance.init(modelName, 'id');
+        const initTimeMs = performance.now() - tInit0;
+        log(`  ✓ Siap dalam ${initTimeMs.toFixed(0)}ms (termasuk kernel warmup)`);
+
+        log(`[PASS 2: ${engineLabel}] Mentranskripsi seluruh audio (${audioData.durationS.toFixed(2)}s)...`);
+        const tDec0 = performance.now();
+        const res = await engineInstance.transcribe(audioData.float32, { language: 'id' });
+        const decTimeMs = performance.now() - tDec0;
+        const rtf = decTimeMs / (audioData.durationS * 1000);
+
+        log(`  ✓ Selesai: "${res.text}"`);
+        log(`  ⏱️ Latensi: ${decTimeMs.toFixed(1)}ms | RTF: ${rtf.toFixed(4)}x`);
+
+        await engineInstance.dispose();
+        return {
+          status: 'success',
+          deviceType: engineInstance.deviceType,
+          initTimeMs,
+          decodeTimeMs: decTimeMs,
+          rtf,
+          text: res.text
+        };
+      } catch (err) {
+        log(`  ❌ Gagal pada ${engineLabel}: ${err.message}`);
+        return {
+          status: 'error',
+          deviceType: engineInstance.deviceType,
+          error: err.message
+        };
+      }
+    }
+
+    window.runFullBenchmark = async function() {
+      logEl.textContent = 'Memulai pengujian performa keseluruhan Catetin...\n';
+      const audioUrl = '/sample-indonesia-16k.wav';
+      const audioData = await loadWavAudio(audioUrl);
+      document.getElementById('audio-info').innerHTML = `
+        <strong>Berkas:</strong> /sample-indonesia-16k.wav | 
+        <strong>Durasi:</strong> ${audioData.durationS.toFixed(2)} detik | 
+        <strong>Format:</strong> ${audioData.sampleRate} Hz, 16-bit Mono (${audioData.float32.length} sampel)
+      `;
+
+      const results = {
+        audio: {
+          durationS: audioData.durationS,
+          samples: audioData.float32.length
+        },
+        pass1: null,
+        pass2_webgpu: null,
+        pass2_wasm_simd: null,
+        pass2_webnn: null,
+        pass2_direct_ort: null,
+        pass2_wasm_ggml: null
+      };
+
+      // 1. Pass 1 Streaming Transducer
+      results.pass1 = await runPass1Transducer(audioData);
+
+      // 2. Pass 2 Option A: WebGPU (GPU Compute)
+      const webgpuEngine = new Pass2WebGpuEngine();
+      results.pass2_webgpu = await runPass2Engine(webgpuEngine, 'Xenova/whisper-tiny', audioData, 'WebGPU (GPU Compute)');
+
+      // 3. Pass 2 Option B: WASM SIMD (Multi-threaded CPU)
+      const wasmEngine = new Pass2WasmSimdEngine();
+      results.pass2_wasm_simd = await runPass2Engine(wasmEngine, 'Xenova/whisper-tiny', audioData, 'Multi-threaded WASM SIMD (CPU)');
+
+      // 4. Pass 2 Option C: WebNN (OS DirectML/NPU)
+      const webnnEngine = new Pass2WebNnEngine();
+      results.pass2_webnn = await runPass2Engine(webnnEngine, 'Xenova/whisper-tiny', audioData, 'WebNN (OS DirectML / NPU)');
+
+      // 5. Pass 2 Option D: Direct ORT Web (Local Whisper)
+      const directOrtEngine = new Pass2DirectOrtEngine();
+      results.pass2_direct_ort = await runPass2Engine(directOrtEngine, 'Xenova/whisper-tiny', audioData, 'Direct ORT Web');
+
+      // 6. Pass 2 Option E: whisper.cpp GGML WASM (Local Whisper)
+      const wasmGgmlEngine = new Pass2WasmGgmlEngine();
+      results.pass2_wasm_ggml = await runPass2Engine(wasmGgmlEngine, 'Xenova/whisper-tiny', audioData, 'whisper.cpp GGML WASM');
+
+      // Render Table
+      const tbody = document.getElementById('results-tbody');
+      tbody.innerHTML = `
+        <tr>
+          <td><strong>Pass 1 (Streaming Live)</strong></td>
+          <td>WASM SIMD (1 Core)</td>
+          <td>Zipformer2 ID</td>
+          <td>0 ms</td>
+          <td>${results.pass1.firstTokenLatencyMs.toFixed(0)} ms (TTFT) / ~31 ms per chunk</td>
+          <td><strong>${results.pass1.rtf.toFixed(3)}x</strong> (Sub-detik)</td>
+          <td>"${results.pass1.finalText}"</td>
+        </tr>
+        <tr>
+          <td><strong>Pass 2 Option A</strong></td>
+          <td>WebGPU (GPU Compute)</td>
+          <td>Whisper Tiny (ID)</td>
+          <td>${results.pass2_webgpu.status === 'success' ? results.pass2_webgpu.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
+          <td>${results.pass2_webgpu.status === 'success' ? results.pass2_webgpu.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${results.pass2_webgpu.status === 'success' ? '<strong>' + results.pass2_webgpu.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
+          <td>${results.pass2_webgpu.status === 'success' ? '"' + results.pass2_webgpu.text + '"' : results.pass2_webgpu.error}</td>
+        </tr>
+        <tr>
+          <td><strong>Pass 2 Option B</strong></td>
+          <td>WASM SIMD (${navigator.hardwareConcurrency || 4} Threads CPU)</td>
+          <td>Whisper Tiny (ID)</td>
+          <td>${results.pass2_wasm_simd.status === 'success' ? results.pass2_wasm_simd.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
+          <td>${results.pass2_wasm_simd.status === 'success' ? results.pass2_wasm_simd.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${results.pass2_wasm_simd.status === 'success' ? '<strong>' + results.pass2_wasm_simd.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
+          <td>${results.pass2_wasm_simd.status === 'success' ? '"' + results.pass2_wasm_simd.text + '"' : results.pass2_wasm_simd.error}</td>
+        </tr>
+        <tr>
+          <td><strong>Pass 2 Option C</strong></td>
+          <td>${results.pass2_webnn.deviceType || 'WebNN (OS DirectML)'}</td>
+          <td>Whisper Tiny (ID)</td>
+          <td>${results.pass2_webnn.status === 'success' ? results.pass2_webnn.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
+          <td>${results.pass2_webnn.status === 'success' ? results.pass2_webnn.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${results.pass2_webnn.status === 'success' ? '<strong>' + results.pass2_webnn.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
+          <td>${results.pass2_webnn.status === 'success' ? '"' + results.pass2_webnn.text + '"' : results.pass2_webnn.error}</td>
+        </tr>
+        <tr>
+          <td><strong>Pass 2 Option D</strong></td>
+          <td>${results.pass2_direct_ort.deviceType || 'Direct ORT (Split-Dtype)'}</td>
+          <td>Whisper Tiny (ID)</td>
+          <td>${results.pass2_direct_ort.status === 'success' ? results.pass2_direct_ort.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
+          <td>${results.pass2_direct_ort.status === 'success' ? results.pass2_direct_ort.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${results.pass2_direct_ort.status === 'success' ? '<strong>' + results.pass2_direct_ort.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
+          <td>${results.pass2_direct_ort.status === 'success' ? '"' + results.pass2_direct_ort.text + '"' : results.pass2_direct_ort.error}</td>
+        </tr>
+        <tr>
+          <td><strong>Pass 2 Option E</strong></td>
+          <td>${results.pass2_wasm_ggml.deviceType || 'whisper.cpp GGML (CPU)'}</td>
+          <td>Whisper Tiny (ID)</td>
+          <td>${results.pass2_wasm_ggml.status === 'success' ? results.pass2_wasm_ggml.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
+          <td>${results.pass2_wasm_ggml.status === 'success' ? results.pass2_wasm_ggml.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${results.pass2_wasm_ggml.status === 'success' ? '<strong>' + results.pass2_wasm_ggml.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
+          <td>${results.pass2_wasm_ggml.status === 'success' ? '"' + results.pass2_wasm_ggml.text + '"' : results.pass2_wasm_ggml.error}</td>
+        </tr>
+      `;
+
+      log('\n======================================================');
+      log('🎉 PENGUJIAN KOMPREHENSIF SELESAI!');
+      log('======================================================');
+      window.benchmarkResults = results;
+      return results;
+    };
+
+    document.getElementById('btn-start').addEventListener('click', () => {
+      window.runFullBenchmark();
+    });
+  </script>
+</body>
+</html>

@@ -49,6 +49,37 @@ header {
   background-color: #22c55e;
 }
 
+.bootstrap-badge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background-color: #27272a;
+  color: #a1a1aa;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.bootstrap-badge.warming {
+  background-color: #451a03;
+  color: #fbbf24;
+  border: 1px solid #78350f;
+}
+
+.bootstrap-badge.ready {
+  background-color: #064e3b;
+  color: #34d399;
+  border: 1px solid #047857;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .controls {
   display: flex;
   align-items: center;
@@ -64,6 +95,7 @@ header {
   border: 1px solid #333;
   border-radius: 4px;
   cursor: pointer;
+  transition: background 0.1s ease, border-color 0.1s ease;
 }
 
 .btn:hover:not(:disabled) {
@@ -91,6 +123,12 @@ header {
   color: #fff;
 }
 
+.btn.muted {
+  background-color: #2e1a1a;
+  border-color: #632020;
+  color: #f87171;
+}
+
 .btn-subtle {
   background: transparent;
   border-color: transparent;
@@ -109,6 +147,16 @@ main {
   gap: 8px;
   padding: 8px;
   overflow: hidden;
+  transition: grid-template-columns 0.15s ease;
+}
+
+/* Fullscreen transcript when notes pane is hidden */
+main.notes-hidden {
+  grid-template-columns: 1fr !important;
+}
+
+main.notes-hidden #notes-pane {
+  display: none !important;
 }
 
 @media (max-width: 768px) {
@@ -116,4 +164,111 @@ main {
     grid-template-columns: 1fr;
     grid-template-rows: 60% 40%;
   }
+}
+
+/* ==========================================================================
+   Settings Modal Dialog Styling (Dark Native, Clean Typography)
+   ========================================================================== */
+dialog.modal {
+  margin: auto;
+  padding: 0;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+  width: 90%;
+  max-width: 440px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6);
+}
+
+dialog.modal::backdrop {
+  background-color: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+}
+
+.modal-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #282828;
+}
+
+.modal-header h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.form-group label {
+  font-size: 0.8rem;
+  color: #999;
+}
+
+.select-input, .text-input {
+  background-color: #242424;
+  border: 1px solid #383838;
+  color: #e0e0e0;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-family: inherit;
+  outline: none;
+}
+
+.select-input:focus, .text-input:focus {
+  border-color: #0284c7;
+}
+
+.checkbox-group {
+  flex-direction: row;
+  align-items: center;
+}
+
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: #ccc;
+  user-select: none;
+}
+
+.status-info {
+  font-size: 0.75rem;
+  color: #888;
+  min-height: 18px;
+}
+
+.status-info.ready {
+  color: #22c55e;
+}
+
+.status-info.loading {
+  color: #38bdf8;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 16px;
+  border-top: 1px solid #282828;
 }

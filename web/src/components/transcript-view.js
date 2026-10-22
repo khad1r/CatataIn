@@ -1,4 +1,5 @@
 // components/transcript-view.js - Native Web Component for Diarized Meeting Transcript
+// Real-time live turn feedback with pulsing activity and clean speaker turns.
 
 export class TranscriptView extends HTMLElement {
   constructor() {
@@ -33,13 +34,26 @@ export class TranscriptView extends HTMLElement {
         border-bottom: 1px solid rgba(56, 189, 248, 0.2);
         font-size: 0.85rem;
         color: #38bdf8;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
       }
       .live-tag {
         font-weight: 700;
-        margin-right: 6px;
       }
-      .live-text {
-        color: #e0f2fe;
+      .live-pulse {
+        animation: pulse 1.2s infinite;
+        font-style: italic;
+        color: #7dd3fc;
+      }
+      .live-dur {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        font-family: monospace;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.45; }
       }
       .feed {
         flex: 1;
@@ -109,19 +123,47 @@ export class TranscriptView extends HTMLElement {
     this.shadowRoot.appendChild(this.feed);
   }
 
-  setLiveText(text) {
-    const liveTextSpan = this.liveBar.querySelector('.live-text');
-    const clean = text ? text.trim() : '';
-    if (clean) {
-      liveTextSpan.textContent = `"${clean}"`;
-      this.liveBar.style.display = 'block';
+  setLiveTurn(speaker, durationS, partialText = null) {
+    const isYou = speaker.toLowerCase().includes('anda') || speaker.toLowerCase().includes('you');
+    const spkClass = isYou ? 'spk-you' : 'spk-remote';
+    const tag = `[${speaker}]`;
+    const durStr = durationS > 0 ? ` [${durationS.toFixed(1)}s]` : '';
+
+    if (partialText && partialText.trim()) {
+      this.hasLiveText = true;
+      this.liveBar.innerHTML = `
+        <span class="${spkClass} live-tag">${tag}</span>
+        <span class="live-text">"${escapeHtml(partialText.trim())}"</span>
+        <span class="live-dur">${durStr}</span>
+      `;
     } else {
-      this.liveBar.style.display = 'none';
-      liveTextSpan.textContent = '';
+      this.hasLiveText = false;
+      this.liveBar.innerHTML = `
+        <span class="${spkClass} live-tag">${tag}</span>
+        <span class="live-text live-pulse">Mendengarkan...</span>
+        <span class="live-dur">${durStr}</span>
+      `;
+    }
+    this.liveBar.style.display = 'flex';
+  }
+
+  clearLiveTurn() {
+    this.hasLiveText = false;
+    this.liveBar.style.display = 'none';
+    this.liveBar.innerHTML = `<span class="live-text"></span>`;
+  }
+
+  setLiveText(text) {
+    if (!text || !text.trim()) {
+      this.clearLiveTurn();
+    } else {
+      this.setLiveTurn('Live', 0, text);
     }
   }
 
   addSegment(speaker, text, timeStr) {
+    this.clearLiveTurn();
+
     const empty = this.feed.querySelector('.empty');
     if (empty) empty.remove();
 
@@ -136,7 +178,7 @@ export class TranscriptView extends HTMLElement {
         <span class="time">${timeStr}</span>
         <span class="${spkClass}">[${speaker}]</span>
       </div>
-      <div class="turn-text">${text}</div>
+      <div class="turn-text">${escapeHtml(text)}</div>
     `;
 
     this.feed.appendChild(turn);
@@ -148,13 +190,29 @@ export class TranscriptView extends HTMLElement {
 
   clear() {
     this.segments = [];
-    this.setLiveText('');
     this.feed.innerHTML = `<div class="empty">Belum ada transkrip.</div>`;
+    this.clearLiveTurn();
   }
 
   getSegments() {
     return this.segments;
   }
+
+  getMarkdown() {
+    if (this.segments.length === 0) return '';
+    return this.segments
+      .map(s => `${s.time} [${s.speaker}]: ${s.text}`)
+      .join('\n\n');
+  }
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 customElements.define('transcript-view', TranscriptView);

@@ -1,52 +1,13 @@
-use wasm_bindgen::prelude::*;
 use catetin_core::audio::AudioResampler;
 use catetin_core::diarization::vad::{VoiceActivityDetector, SpeechSegmenter};
 use catetin_core::diarization::clustering::{OnlineSpeakerClusterer, cosine_similarity};
 use catetin_core::events::SpeakerId;
-use catetin_core::i18n::UiLanguage;
 use catetin_core::asr::{is_hallucination, format_utterance};
 use catetin_core::asr::transducer::ipa_phonemes_to_indonesian;
 
-#[wasm_bindgen]
-pub fn init_panic_hook() {
-    #[cfg(feature = "console_error_panic_hook")]
-    console_error_panic_hook::set_once();
-}
-
 // ============================================================================
-// 1. Audio Resampler (WASM-Bindgen & Raw C-ABI)
+// 1. Audio Resampler (Pure C-ABI, Zero External Imports)
 // ============================================================================
-
-#[wasm_bindgen]
-pub struct WasmAudioResampler {
-    inner: AudioResampler,
-}
-
-#[wasm_bindgen]
-impl WasmAudioResampler {
-    #[wasm_bindgen(constructor)]
-    pub fn new(source_sample_rate: u32, source_channels: u16, target_sample_rate: u32) -> Self {
-        Self {
-            inner: AudioResampler::new(source_sample_rate, source_channels, target_sample_rate),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn process_interleaved(&mut self, samples: &[f32]) -> Vec<f32> {
-        self.inner.process_interleaved(samples)
-    }
-
-    #[wasm_bindgen]
-    pub fn process_mono(&mut self, samples: &[f32]) -> Vec<f32> {
-        self.inner.process_mono(samples)
-    }
-}
-
-#[wasm_bindgen]
-pub fn resample_audio(samples: &[f32], source_rate: u32, source_channels: u16, target_rate: u32) -> Vec<f32> {
-    let mut resampler = AudioResampler::new(source_rate, source_channels, target_rate);
-    resampler.process_interleaved(samples)
-}
 
 #[no_mangle]
 pub extern "C" fn catetin_resampler_new(source_rate: u32, source_channels: u16, target_rate: u32) -> *mut AudioResampler {
@@ -80,33 +41,8 @@ pub unsafe extern "C" fn catetin_resampler_process(
 }
 
 // ============================================================================
-// 2. Voice Activity Detector (VAD) (WASM-Bindgen & Raw C-ABI)
+// 2. Voice Activity Detector (VAD) (Pure C-ABI)
 // ============================================================================
-
-#[wasm_bindgen]
-pub struct WasmVoiceActivityDetector {
-    inner: VoiceActivityDetector,
-}
-
-#[wasm_bindgen]
-impl WasmVoiceActivityDetector {
-    #[wasm_bindgen(constructor)]
-    pub fn new(sample_rate: u32, frame_size: usize) -> Self {
-        Self {
-            inner: VoiceActivityDetector::new(sample_rate, frame_size),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn process_frame(&mut self, frame: &[f32]) -> bool {
-        self.inner.process_frame(frame)
-    }
-
-    #[wasm_bindgen]
-    pub fn frame_rms(&self, frame: &[f32]) -> f32 {
-        self.inner.frame_rms(frame)
-    }
-}
 
 #[no_mangle]
 pub extern "C" fn catetin_vad_new(sample_rate: u32, frame_size: usize) -> *mut VoiceActivityDetector {
@@ -153,7 +89,7 @@ pub unsafe extern "C" fn catetin_vad_frame_rms(
 }
 
 // ============================================================================
-// 3. Speech Segmenter (Utterance Endpointer) (Raw C-ABI)
+// 3. Speech Segmenter (Utterance Endpointer) (Pure C-ABI)
 // ============================================================================
 
 #[no_mangle]
@@ -218,49 +154,8 @@ pub unsafe extern "C" fn catetin_segmenter_is_speaking(ptr: *const SpeechSegment
 }
 
 // ============================================================================
-// 4. Speaker Diarization & Clustering (WASM-Bindgen & Raw C-ABI)
+// 4. Speaker Diarization & Clustering (Pure C-ABI)
 // ============================================================================
-
-#[wasm_bindgen]
-pub struct WasmSpeakerClusterer {
-    inner: OnlineSpeakerClusterer,
-}
-
-#[wasm_bindgen]
-impl WasmSpeakerClusterer {
-    #[wasm_bindgen(constructor)]
-    pub fn new(similarity_threshold: f32, momentum: f32) -> Self {
-        Self {
-            inner: OnlineSpeakerClusterer::new(similarity_threshold, momentum),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn identify_or_register(&mut self, embedding: &[f32]) -> String {
-        let spk_id = self.inner.identify_or_register(embedding);
-        match spk_id {
-            SpeakerId::LocalUser => "You".to_string(),
-            SpeakerId::Remote(id) => format!("Speaker {}", id),
-            SpeakerId::InPerson(id) => format!("Speaker {}", id),
-            SpeakerId::Unknown => "Unknown".to_string(),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn speaker_count(&self) -> usize {
-        self.inner.speaker_count()
-    }
-
-    #[wasm_bindgen]
-    pub fn reset(&mut self) {
-        self.inner.reset();
-    }
-}
-
-#[wasm_bindgen]
-pub fn compute_cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    cosine_similarity(a, b)
-}
 
 #[no_mangle]
 pub extern "C" fn catetin_clusterer_new(threshold: f32, momentum: f32) -> *mut OnlineSpeakerClusterer {
@@ -321,7 +216,7 @@ pub unsafe extern "C" fn catetin_cosine_similarity(
 }
 
 // ============================================================================
-// 5. Post-Processing: Hallucination Filter & Phoneme Normalizer
+// 5. Post-Processing: Hallucination Filter & Phoneme Normalizer (Pure C-ABI)
 // ============================================================================
 
 #[no_mangle]
@@ -422,46 +317,4 @@ pub unsafe extern "C" fn catetin_free_u8(ptr: *mut u8, cap: usize) {
     if !ptr.is_null() && cap > 0 {
         drop(Vec::from_raw_parts(ptr, 0, cap));
     }
-}
-
-// ============================================================================
-// 7. Internationalization (UiLanguage)
-// ============================================================================
-
-#[wasm_bindgen]
-pub struct WasmI18n {
-    lang: UiLanguage,
-}
-
-#[wasm_bindgen]
-impl WasmI18n {
-    #[wasm_bindgen(constructor)]
-    pub fn new(code: &str) -> Self {
-        Self {
-            lang: UiLanguage::from_code(code),
-        }
-    }
-
-    #[wasm_bindgen]
-    pub fn get_text(&self, key: &str) -> String {
-        self.lang.text(key)
-    }
-
-    #[wasm_bindgen]
-    pub fn language_code(&self) -> String {
-        self.lang.code().to_string()
-    }
-
-    #[wasm_bindgen]
-    pub fn display_name(&self) -> String {
-        self.lang.display_name()
-    }
-}
-
-#[wasm_bindgen]
-pub fn get_supported_languages() -> js_sys::Array {
-    let array = js_sys::Array::new();
-    array.push(&JsValue::from_str("id"));
-    array.push(&JsValue::from_str("en"));
-    array
 }
