@@ -1,19 +1,16 @@
 // asr-worker.js - Dedicated Web Worker for In-Browser Speech Recognition (Pass 2)
 // Offloads heavy neural inference off the main UI and audio threads.
-// Coordinates pluggable Pass 2 engines (WebGPU, WASM SIMD, WebNN) via Pass2Hub.
+// Coordinates pluggable Pass 2 engines via Pass2Hub with strict serial execution.
 
 import { Pass2Hub } from './engines/hub.js';
 
 const hub = new Pass2Hub();
-let isInitializing = false;
-let isBusy = false;
 let currentEngine = 'webgpu';
 let currentModel = 'Xenova/whisper-tiny';
 let currentLanguage = 'id';
+let opQueue = Promise.resolve();
 
-self.onmessage = async (e) => {
-  const { type, data } = e.data;
-
+async function handleMessage(type, data) {
   if (type === 'config') {
     const { engine, model, language } = data;
     if (engine) currentEngine = engine;
@@ -21,6 +18,10 @@ self.onmessage = async (e) => {
     if (language) currentLanguage = language;
 
     if (currentModel === 'none') {
+      if (hub.activeEngine) {
+        await hub.activeEngine.dispose();
+        hub.activeEngine = null;
+      }
       self.postMessage({
         type: 'status',
         data: { status: 'ready', model: 'none', engine: currentEngine, device: 'NONE' }
@@ -28,70 +29,41 @@ self.onmessage = async (e) => {
       return;
     }
 
-    if (!isInitializing) {
-      isInitializing = true;
-      self.postMessage({
-        type: 'status',
-        data: { status: 'loading', model: currentModel, engine: currentEngine }
-      });
+    self.postMessage({
+      type: 'status',
+      data: { status: 'loading', model: currentModel, engine: currentEngine }
+    });
 
-      try {
-        await hub.setEngine(currentEngine, { model: currentModel, language: currentLanguage }, (info) => {
-          self.postMessage({
-            type: 'progress',
-            data: {
-              progress: Math.round(info.progress || 0),
-              file: info.file
-            }
-          });
-        });
-
-        isInitializing = false;
-        const info = hub.getActiveEngineInfo();
+    try {
+      await hub.setEngine(currentEngine, { model: currentModel, language: currentLanguage }, (info) => {
         self.postMessage({
-          type: 'status',
+          type: 'progress',
           data: {
-            status: 'ready',
-            model: currentModel,
-            engine: currentEngine,
-            device: info.deviceType,
-            engineName: info.name
+            progress: Math.round(info.progress || 0),
+            file: info.file
           }
         });
-      } catch (err) {
-        isInitializing = false;
-        console.error('[ASR Worker] Engine initialization error:', err);
-        self.postMessage({
-          type: 'status',
-          data: { status: 'error', error: err.message, engine: currentEngine }
-        });
-      }
-    }
-  } else if (type === 'transcribe_interim') {
-    // Pass 1: Streaming interim hypothesis (< 400ms)
-    if (isBusy || !hub.activeEngine || !hub.activeEngine.isReady || currentModel === 'none') {
-      return; // Skip interim if busy or engine not ready
-    }
-
-    const { pcm16k, speaker, durationS } = data;
-    isBusy = true;
-    try {
-      const res = await hub.transcribe(pcm16k, {
-        language: currentLanguage,
-        maxNewTokens: 16
       });
-      isBusy = false;
-      if (res && res.text) {
-        self.postMessage({
-          type: 'interim_result',
-          data: { speaker, text: res.text, durationS }
-        });
-      }
-    } catch (_) {
-      isBusy = false;
+
+      const info = hub.getActiveEngineInfo();
+      self.postMessage({
+        type: 'status',
+        data: {
+          status: 'ready',
+          model: currentModel,
+          engine: currentEngine,
+          device: info.deviceType,
+          engineName: info.name
+        }
+      });
+    } catch (err) {
+      console.error('[ASR Worker] Engine initialization error:', err);
+      self.postMessage({
+        type: 'status',
+        data: { status: 'error', error: err.message, model: currentModel, engine: currentEngine }
+      });
     }
   } else if (type === 'transcribe') {
-    // Pass 2: High-accuracy turn finalization
     const { id, pcm16k, speaker, timeStr, language, durationS, contextPrompt } = data;
     const lang = language || currentLanguage;
     const audioDur = typeof durationS === 'number' ? durationS : (pcm16k ? pcm16k.length / 16000 : 0);
@@ -105,25 +77,13 @@ self.onmessage = async (e) => {
     }
 
     if (!hub.activeEngine || !hub.activeEngine.isReady) {
-      if (isInitializing) {
-        self.postMessage({
-          type: 'result',
-          data: { id, text: '', speaker, timeStr, error: 'Engine sedang memuat', latencyMs: 0, audioDurationS: audioDur, rtf: '0.00' }
-        });
-        return;
-      }
-      try {
-        await hub.setEngine(currentEngine, { model: currentModel, language: currentLanguage });
-      } catch (err) {
-        self.postMessage({
-          type: 'result',
-          data: { id, text: '', speaker, timeStr, error: err.message, latencyMs: 0, audioDurationS: audioDur, rtf: '0.00' }
-        });
-        return;
-      }
+      self.postMessage({
+        type: 'result',
+        data: { id, text: '', speaker, timeStr, error: `Engine Pass 2 (${currentEngine}) belum siap.`, latencyMs: 0, audioDurationS: audioDur, rtf: '0.00' }
+      });
+      return;
     }
 
-    isBusy = true;
     const startTime = performance.now();
 
     try {
@@ -135,7 +95,6 @@ self.onmessage = async (e) => {
         maxNewTokens: 64
       });
 
-      isBusy = false;
       const latencyMs = res.latencyMs || Math.round(performance.now() - startTime);
       const rtf = audioDur > 0 ? (latencyMs / (audioDur * 1000)).toFixed(2) : '0.00';
 
@@ -152,7 +111,6 @@ self.onmessage = async (e) => {
         }
       });
     } catch (err) {
-      isBusy = false;
       const latencyMs = Math.round(performance.now() - startTime);
       console.error('[ASR Worker] Finalize inference error:', err);
       self.postMessage({
@@ -170,4 +128,11 @@ self.onmessage = async (e) => {
       });
     }
   }
+}
+
+self.onmessage = (e) => {
+  const { type, data } = e.data;
+  opQueue = opQueue.then(() => handleMessage(type, data)).catch((err) => {
+    console.error('[ASR Worker] Queue error:', err);
+  });
 };

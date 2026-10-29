@@ -59,6 +59,127 @@ export function createSlaneyMelFilterbank(nFft = 400, nMels = 80, sr = 16000) {
   return filters;
 }
 
+let _cachedSlaneyFilters = null;
+let _cachedHannWindow = null;
+let _cachedCosTable = null;
+let _cachedSinTable = null;
+
+function ensureCpuTables() {
+  if (!_cachedSlaneyFilters) {
+    _cachedSlaneyFilters = createSlaneyMelFilterbank(400, 80, 16000);
+  }
+  if (!_cachedHannWindow) {
+    _cachedHannWindow = new Float32Array(400);
+    const twoPiOverN = (2.0 * Math.PI) / 400.0;
+    for (let n = 0; n < 400; n++) {
+      _cachedHannWindow[n] = 0.5 * (1.0 - Math.cos(twoPiOverN * n));
+    }
+  }
+  if (!_cachedCosTable || !_cachedSinTable) {
+    _cachedCosTable = new Float32Array(201 * 400);
+    _cachedSinTable = new Float32Array(201 * 400);
+    const twoPiOverN = (2.0 * Math.PI) / 400.0;
+    for (let k = 0; k < 201; k++) {
+      const kAngle = twoPiOverN * k;
+      const base = k * 400;
+      for (let n = 0; n < 400; n++) {
+        const angle = kAngle * n;
+        _cachedCosTable[base + n] = Math.cos(angle);
+        _cachedSinTable[base + n] = Math.sin(angle);
+      }
+    }
+  }
+}
+
+/**
+ * Pure CPU Whisper Log-Mel Spectrogram Extractor (1:1 mathematical match with WebGpuMelExtractor).
+ * @param {Float32Array} pcm16k Single-channel 16kHz PCM audio
+ * @param {Float32Array|null} customFilters Optional flattened [80 * 201] Slaney filterbank
+ * @returns {{ data: Float32Array, dims: number[], latencyMs: number, numActiveFrames: number }}
+ */
+export function computeCpuMelSpectrogram(pcm16k, customFilters = null) {
+  if (!pcm16k || !(pcm16k instanceof Float32Array) || pcm16k.length === 0) {
+    throw new Error('computeCpuMelSpectrogram membutuhkan Float32Array PCM 16kHz yang tidak kosong.');
+  }
+  const tStart = performance.now();
+  ensureCpuTables();
+  const melFilters = customFilters || _cachedSlaneyFilters;
+  const hann = _cachedHannWindow;
+  const cosTab = _cachedCosTable;
+  const sinTab = _cachedSinTable;
+
+  const maxAudioSamples = 480000;
+  const maxFrames = 3000;
+  const audioLen = Math.min(pcm16k.length, maxAudioSamples);
+  const numFrames = Math.min(maxFrames, Math.floor(1 + Math.floor(audioLen / 160)));
+  const s = Math.max(1, audioLen - 1);
+  const twoS = 2 * s;
+  const padOffset = 200;
+  const invLn10 = 0.4342944819032518;
+
+  const rawMel = new Float32Array(80 * numFrames);
+  const windowed = new Float32Array(400);
+  const power = new Float32Array(201);
+
+  let maxVal = -Infinity;
+
+  for (let f = 0; f < numFrames; f++) {
+    const frameStart = f * 160;
+    for (let n = 0; n < 400; n++) {
+      const uncentered = frameStart + n - padOffset;
+      let mod = (uncentered + s) % twoS;
+      if (mod < 0) mod += twoS;
+      const offset = Math.abs(mod - s);
+      windowed[n] = pcm16k[offset] * hann[n];
+    }
+
+    for (let k = 0; k < 201; k++) {
+      const base = k * 400;
+      let r = 0.0;
+      let im = 0.0;
+      for (let n = 0; n < 400; n++) {
+        const x = windowed[n];
+        r += x * cosTab[base + n];
+        im -= x * sinTab[base + n];
+      }
+      power[k] = r * r + im * im;
+    }
+
+    for (let m = 0; m < 80; m++) {
+      const melBase = m * 201;
+      let sum = 0.0;
+      for (let k = 0; k < 201; k++) {
+        sum += melFilters[melBase + k] * power[k];
+      }
+      const val = Math.log(Math.max(1e-10, sum)) * invLn10;
+      rawMel[m * numFrames + f] = val;
+      if (val > maxVal) maxVal = val;
+    }
+  }
+
+  const padVal = (maxVal - 8.0 + 4.0) * 0.25;
+  const clampMin = maxVal - 8.0;
+  const melData = new Float32Array(80 * 3000);
+
+  for (let m = 0; m < 80; m++) {
+    const srcBase = m * numFrames;
+    const dstBase = m * 3000;
+    for (let f = 0; f < numFrames; f++) {
+      const v = rawMel[srcBase + f];
+      melData[dstBase + f] = ((v > clampMin ? v : clampMin) + 4.0) * 0.25;
+    }
+    melData.fill(padVal, dstBase + numFrames, dstBase + 3000);
+  }
+
+  const latencyMs = Math.round(performance.now() - tStart);
+  return {
+    data: melData,
+    dims: [1, 80, 3000],
+    latencyMs,
+    numActiveFrames: numFrames
+  };
+}
+
 /**
  * WebGPU Compute Shader for Parallel STFT (400-pt) + Mel Filterbank Projection (80 channels).
  * Prunes execution to only the active audio frames, bypassing the redundant 3,000-frame CPU loops.
@@ -235,13 +356,11 @@ export class WebGpuMelExtractor {
   }
 
   async warmup() {
-    if (!this.device || !this.pipeline) return;
-    try {
-      const dummyPcm = new Float32Array(8000); // 0.5s dummy audio
-      await this.extract(dummyPcm);
-    } catch (err) {
-      console.warn("[WebGpuMelExtractor] Warmup warning:", err);
+    if (!this.device || !this.pipeline) {
+      throw new Error('WebGpuMelExtractor belum siap untuk warmup.');
     }
+    const dummyPcm = new Float32Array(8000); // 0.5s dummy audio
+    await this.extract(dummyPcm);
   }
 
   /**
@@ -332,138 +451,7 @@ export class WebGpuMelExtractor {
     this.readBuf = null;
     this.uniformBuf = null;
     this.pipeline = null;
+    this.device?.destroy();
     this.device = null;
-  }
-}
-
-/**
- * Fast CPU Fallback Mel Extractor using Sparse Filterbank and Pre-computed Look-up Tables.
- * Active-frame pruning avoids calculating 3,000 frames when audio is shorter.
- */
-export class FastCpuMelExtractor {
-  constructor() {
-    this.nMels = 80;
-    this.nFft = 400;
-    this.hopLength = 160;
-    this.maxFrames = 3000;
-    this.maxSamples = 480000;
-    this.sparseMel = null;
-    this.cosWin = null;
-    this.sinWin = null;
-    this.isReady = false;
-  }
-
-  init(melFilters = null) {
-    const filters = melFilters || createSlaneyMelFilterbank(this.nFft, this.nMels, 16000);
-    this.sparseMel = [];
-    for (let m = 0; m < this.nMels; m++) {
-      let startK = -1;
-      let endK = -1;
-      const base = m * 201;
-      for (let k = 0; k < 201; k++) {
-        if (filters[base + k] > 0) {
-          if (startK === -1) startK = k;
-          endK = k;
-        }
-      }
-      const len = (startK !== -1) ? (endK - startK + 1) : 0;
-      const weights = new Float32Array(len);
-      for (let k = 0; k < len; k++) {
-        weights[k] = filters[base + (startK + k)];
-      }
-      this.sparseMel.push({ startK, endK, weights });
-    }
-
-    // Precompute folded Hann-windowed Cosine and Sine LUTs
-    this.cosWin = new Float32Array(201 * 400);
-    this.sinWin = new Float32Array(201 * 400);
-    for (let k = 0; k < 201; k++) {
-      const kBase = k * 400;
-      for (let n = 0; n < 400; n++) {
-        const w = 0.5 * (1 - Math.cos((2 * Math.PI * n) / 400));
-        this.cosWin[kBase + n] = Math.cos((2 * Math.PI * k * n) / 400) * w;
-        this.sinWin[kBase + n] = -Math.sin((2 * Math.PI * k * n) / 400) * w;
-      }
-    }
-    this.isReady = true;
-  }
-
-  extract(pcm16k) {
-    if (!this.isReady) this.init();
-    const t0 = performance.now();
-    const audioLen = Math.min(pcm16k.length, this.maxSamples);
-    const sMax = audioLen - 1;
-
-    function getSample(idx) {
-      const uncentered = idx - 200;
-      const offset = Math.abs((uncentered + sMax) % (2 * sMax) - sMax);
-      return pcm16k[offset];
-    }
-
-    const numFrames = Math.min(this.maxFrames, Math.floor(1 + Math.floor(audioLen / this.hopLength)));
-    const power = new Float32Array(201);
-    const melEnergies = new Float32Array(this.nMels * numFrames);
-
-    let maxVal = -Infinity;
-
-    for (let f = 0; f < numFrames; f++) {
-      const frameStart = f * this.hopLength;
-
-      // Real DFT on 201 bins
-      for (let k = 1; k < 200; k++) {
-        let r = 0;
-        let im = 0;
-        const base = k * 400;
-        for (let n = 0; n < 400; n++) {
-          const x = getSample(frameStart + n);
-          r += x * this.cosWin[base + n];
-          im += x * this.sinWin[base + n];
-        }
-        power[k] = r * r + im * im;
-      }
-
-      // Sparse Mel dot-product
-      for (let m = 0; m < this.nMels; m++) {
-        const sm = this.sparseMel[m];
-        let sum = 0;
-        const w = sm.weights;
-        const startK = sm.startK;
-        for (let j = 0; j < w.length; j++) {
-          sum += w[j] * power[startK + j];
-        }
-        const val = Math.log10(Math.max(1e-10, sum));
-        if (val > maxVal) maxVal = val;
-        melEnergies[m * numFrames + f] = val;
-      }
-    }
-
-    const padVal = (maxVal - 8.0 + 4.0) * 0.25;
-    const clampMin = maxVal - 8.0;
-    const melData = new Float32Array(this.nMels * this.maxFrames);
-
-    for (let m = 0; m < this.nMels; m++) {
-      const srcBase = m * numFrames;
-      const dstBase = m * this.maxFrames;
-      for (let f = 0; f < numFrames; f++) {
-        const v = melEnergies[srcBase + f];
-        melData[dstBase + f] = ((v > clampMin ? v : clampMin) + 4.0) * 0.25;
-      }
-      melData.fill(padVal, dstBase + numFrames, dstBase + this.maxFrames);
-    }
-
-    const latencyMs = Math.round(performance.now() - t0);
-    return {
-      data: melData,
-      dims: [1, 80, 3000],
-      latencyMs,
-      numActiveFrames: numFrames
-    };
-  }
-
-  dispose() {
-    this.sparseMel = null;
-    this.cosWin = null;
-    this.sinWin = null;
-    this.isReady = false;
   }
 }

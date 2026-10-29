@@ -58,9 +58,9 @@
           <select id="setting-pass2-engine" class="select-input">
             <option value="webgpu" selected>WebGPU (Akselerasi GPU Shader)</option>
             <option value="wasm-simd">Multi-Thread CPU SIMD (WASM 8-Core)</option>
-            <option value="webnn">WebNN (OS DirectML / NPU Native)</option>
-            <option value="direct-ort">Direct ORT Web (Local Whisper INT8 - Zero CDN)</option>
-            <option value="wasm-ggml">whisper.cpp GGML WASM (Local Q8_0 - 1:1 CLI)</option>
+            <option value="webnn" disabled>WebNN (OS DirectML / NPU Native) (Belum Tersedia)</option>
+            <option value="direct-ort">Direct ORT Web (Local Whisper Base INT8)</option>
+            <option value="wasm-ggml" disabled>whisper.cpp GGML WASM (Local Q8_0 - 1:1 CLI) (Belum Tersedia)</option>
           </select>
         </div>
 
@@ -100,7 +100,30 @@
       </div>
 
       <div class="modal-footer">
+        <button id="btn-retest-hw" type="button" class="btn">Uji Ulang</button>
         <button id="btn-save-settings" class="btn btn-primary">Simpan</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal Onboarding Uji Kesiapan Hardware -->
+  <dialog id="modal-onboarding" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Uji Kesiapan Hardware</h2>
+      </div>
+      <div class="modal-body">
+        <div id="onboarding-progress" class="onboarding-step">
+          <span class="pulse-dot"></span>
+          <span id="onboarding-step-text">Menguji kandidat engine...</span>
+        </div>
+        <div id="onboarding-results-list" class="hw-results-list"></div>
+        <div id="onboarding-recommendation" class="hw-recommend" style="display: none;"></div>
+        <div id="onboarding-warning" class="hw-warn" style="display: none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-onboarding-manual" type="button" class="btn" disabled>Pilih Manual</button>
+        <button id="btn-onboarding-start" type="button" class="btn btn-primary" disabled>Mulai</button>
       </div>
     </div>
   </dialog>

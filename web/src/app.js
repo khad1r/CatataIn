@@ -1,11 +1,20 @@
-// app.js - Main Application Coordinator (Ponytail: clean, zero mocks, zero cloud API)
+// app.js - Main Application Coordinator
 
 import { AudioEngine } from './audio-engine.js';
 import { OnnxRunner } from './onnx-runner.js';
+import { Pass2Hub } from './engines/hub.js';
+import { READINESS_SCHEMA_VERSION } from './engines/pass2-interface.js';
 import './components/vu-meter.js';
 import './components/transcript-view.js';
 import './components/notes-view.js';
 import './components/catetin-telemetry.js';
+
+const KNOWN_WHISPER_MODELS = [
+  'Xenova/whisper-tiny',
+  'Xenova/whisper-base',
+  'Xenova/whisper-small',
+  'none'
+];
 
 class CatetinApp {
   constructor() {
@@ -15,11 +24,11 @@ class CatetinApp {
     this.isRecording = false;
     this.isPaused = false;
     this.micWanted = true;
+    this.isOnboardingRunning = false;
 
-    // System Lifecycle State
-    this.state = 'BOOTSTRAPPING'; // BOOTSTRAPPING | WARMING_PASS1 | WARMING_PASS2 | SYSTEM_READY | ACTIVE_RECORDING
+    // System Lifecycle State: BOOTSTRAPPING | WARMING_PASS1 | WARMING_PASS2 | SYSTEM_READY | ERROR
+    this.state = 'BOOTSTRAPPING';
 
-    // Load persisted settings
     this.settings = this.loadSettings();
 
     this.initDOM();
@@ -27,8 +36,11 @@ class CatetinApp {
     this.initHotkeys();
     this.applySettings();
 
-    // Jalankan bootstrap eager pre-warming
-    this.bootstrapSystem();
+    if (this.needsHardwareTest()) {
+      this.runHardwareOnboarding();
+    } else {
+      this.bootstrapSystem();
+    }
   }
 
   loadSettings() {
@@ -37,9 +49,12 @@ class CatetinApp {
       if (saved) {
         return JSON.parse(saved);
       }
-    } catch (_) {}
+    } catch (err) {
+      console.error('[App] Gagal membaca pengaturan dari localStorage:', err);
+    }
 
     return {
+      pass2Engine: 'webgpu',
       language: 'id',
       whisperModel: 'Xenova/whisper-base',
       transducerModel: 'id',
@@ -51,7 +66,141 @@ class CatetinApp {
   saveSettings() {
     try {
       localStorage.setItem('catetin_settings', JSON.stringify(this.settings));
-    } catch (_) {}
+    } catch (err) {
+      console.error('[App] Gagal menyimpan pengaturan ke localStorage:', err);
+    }
+  }
+
+  needsHardwareTest() {
+    try {
+      const raw = localStorage.getItem('catetin_hw_profile');
+      if (!raw) return true;
+      const profile = JSON.parse(raw);
+      if (profile.schemaVersion !== READINESS_SCHEMA_VERSION) return true;
+      if (profile.userAgent !== navigator.userAgent) return true;
+      return false;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  async runHardwareOnboarding() {
+    if (this.isOnboardingRunning) return;
+    this.isOnboardingRunning = true;
+
+    if (this.isRecording) {
+      this.toggleSession();
+    }
+    if (!this.modalOnboarding) {
+      this.isOnboardingRunning = false;
+      return this.bootstrapSystem();
+    }
+
+    this.onboardingResultsList.innerHTML = '';
+    this.onboardingRecommendation.style.display = 'none';
+    this.onboardingWarning.style.display = 'none';
+    this.onboardingWarning.classList.add('hidden');
+    this.onboardingProgress.style.display = 'flex';
+    const pulseDot = this.onboardingProgress?.querySelector('.pulse-dot');
+    if (pulseDot) pulseDot.classList.remove('hidden');
+    this.onboardingStepText.textContent = 'Menyiapkan pengujian hardware...';
+    if (this.onboardingStatusText) {
+      this.onboardingStatusText.textContent = 'Menyiapkan pengujian hardware...';
+    }
+    this.btnOnboardingStart.disabled = true;
+    this.btnOnboardingManual.disabled = true;
+
+    if (!this.modalOnboarding.open) {
+      this.modalOnboarding.showModal();
+    }
+
+    try {
+      const hub = new Pass2Hub();
+      const { results, recommendation } = await hub.runReadinessTests(({ engineName, model }) => {
+        const shortModel = model.replace('Xenova/', '');
+        const progressMsg = `Menguji ${engineName} (${shortModel})...`;
+        this.onboardingStepText.textContent = progressMsg;
+        if (this.onboardingStatusText) {
+          this.onboardingStatusText.textContent = progressMsg;
+        }
+      });
+
+      this.onboardingProgress.style.display = 'none';
+
+      for (const r of results) {
+        const row = document.createElement('div');
+        row.className = 'hw-row';
+        const shortModel = r.model.replace('Xenova/', '');
+        const badge = !r.supported ? '🔴' : (r.rtf < 0.8 ? '🟢' : '⚠️');
+        const metric = r.supported ? `RTF ${r.rtf.toFixed(2)}x (${r.decodeMs}ms)` : (r.error || 'Gagal');
+        const left = document.createElement('span');
+        left.textContent = `${badge} ${r.engineId.toUpperCase()} · ${shortModel}`;
+        const right = document.createElement('span');
+        right.textContent = metric;
+        row.appendChild(left);
+        row.appendChild(right);
+        this.onboardingResultsList.appendChild(row);
+      }
+
+      const recShortModel = recommendation.whisperModel.replace('Xenova/', '');
+      const recRtfText = typeof recommendation.rtf === 'number' ? ` (RTF ${recommendation.rtf.toFixed(2)}x)` : '';
+      this.onboardingRecommendation.textContent = `Rekomendasi: ${recommendation.pass2Engine.toUpperCase()} + ${recShortModel}${recRtfText}`;
+      this.onboardingRecommendation.style.display = 'block';
+
+      if (recommendation.slowHardwareWarning) {
+        this.onboardingWarning.textContent = 'Hardware terlalu lambat untuk Whisper Base; menggunakan Whisper Tiny.';
+        this.onboardingWarning.style.display = 'block';
+        this.onboardingWarning.classList.remove('hidden');
+      }
+
+      this.settings.pass2Engine = recommendation.pass2Engine;
+      this.settings.whisperModel = recommendation.whisperModel;
+      this.saveSettings();
+
+      try {
+        localStorage.setItem('catetin_hw_profile', JSON.stringify({
+          schemaVersion: READINESS_SCHEMA_VERSION,
+          userAgent: navigator.userAgent,
+          timestamp: Date.now(),
+          recommendation,
+          results
+        }));
+      } catch (err) {
+        console.error('[App] Gagal menyimpan profil hardware:', err);
+      }
+
+      this.btnOnboardingStart.disabled = false;
+    } catch (err) {
+      console.error('[App] Pengujian hardware gagal:', err);
+      if (this.onboardingWarning) {
+        this.onboardingWarning.textContent = 'Pengujian perangkat keras gagal: ' + (err.message || String(err));
+        this.onboardingWarning.classList.remove('hidden');
+        this.onboardingWarning.style.display = 'block';
+      }
+      if (this.onboardingStatusText) {
+        this.onboardingStatusText.textContent = 'Pengujian dihentikan karena kesalahan.';
+      }
+    } finally {
+      this.isOnboardingRunning = false;
+      const pulse = this.onboardingProgress?.querySelector('.pulse-dot');
+      if (pulse) {
+        pulse.classList.add('hidden');
+      }
+      if (this.btnOnboardingManual) {
+        this.btnOnboardingManual.disabled = false;
+      }
+    }
+  }
+
+  _resolveSelectedWhisperModel() {
+    if (this.selectWhisper.value === 'custom') {
+      const custom = this.inputCustomModel.value.trim();
+      if (!custom) {
+        throw new Error('ID Model Hugging Face kustom tidak boleh kosong.');
+      }
+      return custom;
+    }
+    return this.selectWhisper.value;
   }
 
   initDOM() {
@@ -84,6 +233,18 @@ class CatetinApp {
     this.checkboxHideNotes = document.getElementById('setting-hide-notes');
     this.modelStatusText = document.getElementById('model-status-text');
 
+    // Onboarding elements
+    this.btnRetestHw = document.getElementById('btn-retest-hw');
+    this.modalOnboarding = document.getElementById('modal-onboarding');
+    this.onboardingProgress = document.getElementById('onboarding-progress');
+    this.onboardingStepText = document.getElementById('onboarding-step-text');
+    this.onboardingStatusText = this.onboardingStepText;
+    this.onboardingResultsList = document.getElementById('onboarding-results-list');
+    this.onboardingRecommendation = document.getElementById('onboarding-recommendation');
+    this.onboardingWarning = document.getElementById('onboarding-warning');
+    this.btnOnboardingManual = document.getElementById('btn-onboarding-manual');
+    this.btnOnboardingStart = document.getElementById('btn-onboarding-start');
+
     // Event Listeners
     this.btnSession.addEventListener('click', () => this.toggleSession());
     this.btnMic.addEventListener('click', () => this.toggleMic());
@@ -95,6 +256,32 @@ class CatetinApp {
     this.btnCloseModal.addEventListener('click', () => this.closeSettings());
     this.btnSaveSettings.addEventListener('click', () => this.saveSettingsFromModal());
 
+    if (this.btnRetestHw) {
+      this.btnRetestHw.addEventListener('click', () => {
+        if (this.state === 'RECORDING' || this.state === 'INITIALIZING' || this.state === 'STOPPING' || this.isOnboardingRunning) return;
+        this.closeSettings();
+        this.runHardwareOnboarding();
+      });
+    }
+    if (this.modalOnboarding) {
+      this.modalOnboarding.addEventListener('cancel', (e) => {
+        e.preventDefault();
+      });
+    }
+    if (this.btnOnboardingStart) {
+      this.btnOnboardingStart.addEventListener('click', () => {
+        this.modalOnboarding.close();
+        this.applySettings();
+        this.bootstrapSystem();
+      });
+    }
+    if (this.btnOnboardingManual) {
+      this.btnOnboardingManual.addEventListener('click', () => {
+        this.modalOnboarding.close();
+        this.openSettings();
+      });
+    }
+
     this.selectWhisper.addEventListener('change', () => {
       this.groupCustomModel.style.display =
         this.selectWhisper.value === 'custom' ? 'flex' : 'none';
@@ -104,7 +291,6 @@ class CatetinApp {
       this.setNotesHidden(this.checkboxHideNotes.checked);
     });
 
-    // Close modal on backdrop click
     this.modalSettings.addEventListener('click', (e) => {
       if (e.target === this.modalSettings) {
         this.closeSettings();
@@ -116,8 +302,7 @@ class CatetinApp {
     this.selectPass2Engine.value = this.settings.pass2Engine || 'webgpu';
     this.selectLanguage.value = this.settings.language || 'id';
 
-    const isKnownWhisper = ['Xenova/whisper-tiny', 'Xenova/whisper-base', 'Xenova/whisper-small', 'none'].includes(this.settings.whisperModel);
-    if (isKnownWhisper) {
+    if (KNOWN_WHISPER_MODELS.includes(this.settings.whisperModel)) {
       this.selectWhisper.value = this.settings.whisperModel;
       this.groupCustomModel.style.display = 'none';
     } else {
@@ -130,10 +315,7 @@ class CatetinApp {
     this.checkboxHideNotes.checked = !!this.settings.hideNotes;
     this.setNotesHidden(this.checkboxHideNotes.checked);
 
-    // Apply to ASR Worker
-    const activeModel = this.selectWhisper.value === 'custom'
-      ? (this.inputCustomModel.value.trim() || 'Xenova/whisper-base')
-      : this.selectWhisper.value;
+    const activeModel = this._resolveSelectedWhisperModel();
 
     this.onnx.updateConfig({
       pass2Engine: this.selectPass2Engine.value,
@@ -149,16 +331,14 @@ class CatetinApp {
       this.bootstrapStatus.textContent = label;
       this.bootstrapStatus.className = 'bootstrap-badge ' + (state === 'SYSTEM_READY' ? 'ready' : 'warming');
     }
-    if (this.telemetry) {
-      this.telemetry.log('SYS', `[State] ${state}: ${label}`);
-    }
+    this.telemetry.log(state === 'ERROR' ? 'ERROR' : 'SYS', `[State] ${state}: ${label}`);
 
     if (state === 'SYSTEM_READY') {
       this.btnSession.disabled = false;
-      this.btnSession.textContent = this.isRecording ? 'Berhenti' : 'Mulai';
+      this.btnSession.textContent = this.isRecording ? 'Stop' : 'Mulai';
     } else if (!this.isRecording) {
       this.btnSession.disabled = true;
-      this.btnSession.textContent = label;
+      this.btnSession.textContent = state === 'ERROR' ? 'Error AI' : label;
     }
   }
 
@@ -167,41 +347,21 @@ class CatetinApp {
 
     try {
       this.setBootstrapState('WARMING_PASS1', 'Memuat DSP & Transducer...');
-      await this.audio.initWasm('./catetin.wasm');
+      await Promise.all([
+        this.audio.initWasm('./catetin.wasm'),
+        this.onnx.whenPass1Ready()
+      ]);
 
-      const pass1Promise = new Promise((resolve) => {
-        if (this.onnx.transducerReady || this.settings.transducerModel === 'none') {
-          resolve();
-        } else {
-          const checkP1 = setInterval(() => {
-            if (this.onnx.transducerReady || this.settings.transducerModel === 'none') {
-              clearInterval(checkP1);
-              resolve();
-            }
-          }, 50);
-        }
-      });
-
-      const pass2Promise = new Promise((resolve) => {
-        if (this.onnx.isReady || this.settings.whisperModel === 'none') {
-          resolve();
-        } else {
-          const checkP2 = setInterval(() => {
-            if (this.onnx.isReady || this.settings.whisperModel === 'none') {
-              clearInterval(checkP2);
-              resolve();
-            }
-          }, 50);
-        }
-      });
-
-      this.setBootstrapState('WARMING_PASS2', 'Pre-warming shader GPU...');
-      await Promise.all([pass1Promise, pass2Promise]);
+      const pass2Label = this.selectPass2Engine.value === 'webgpu'
+        ? 'Pre-warming shader GPU...'
+        : 'Menyiapkan engine Pass 2...';
+      this.setBootstrapState('WARMING_PASS2', pass2Label);
+      await this.onnx.whenPass2Ready();
 
       this.setBootstrapState('SYSTEM_READY', 'Siap (0ms)');
     } catch (err) {
       console.error('[Bootstrap Error]', err);
-      this.setBootstrapState('ERROR', 'Gagal inisialisasi AI');
+      this.setBootstrapState('ERROR', err.message || 'Gagal inisialisasi AI');
     }
   }
 
@@ -210,26 +370,37 @@ class CatetinApp {
       this.mainLayout.classList.add('notes-hidden');
     } else {
       this.mainLayout.classList.remove('notes-hidden');
-      if (this.notesView && this.transcriptView) {
-        this.notesView.updateInsights(this.transcriptView.getSegments());
-      }
+      this.notesView.updateInsights(this.transcriptView.getSegments());
     }
   }
 
   openSettings() {
-    this.applySettings();
+    this.selectPass2Engine.value = this.settings.pass2Engine || 'webgpu';
+    this.selectLanguage.value = this.settings.language || 'id';
+    this.selectTransducer.value = this.settings.transducerModel || 'id';
+    this.checkboxHideNotes.checked = !!this.settings.hideNotes;
     this.modalSettings.showModal();
   }
 
   closeSettings() {
     this.modalSettings.close();
+    if (this.state === 'BOOTSTRAPPING' && !this.isOnboardingRunning) {
+      this.bootstrapSystem();
+    }
   }
 
   saveSettingsFromModal() {
-    const selectedWhisper = this.selectWhisper.value;
-    const finalWhisperModel = selectedWhisper === 'custom'
-      ? (this.inputCustomModel.value.trim() || 'Xenova/whisper-base')
-      : selectedWhisper;
+    let finalWhisperModel;
+    try {
+      finalWhisperModel = this._resolveSelectedWhisperModel();
+    } catch (err) {
+      alert(err.message);
+      return;
+    }
+
+    if (this.isRecording) {
+      this.toggleSession();
+    }
 
     this.settings = {
       pass2Engine: this.selectPass2Engine.value,
@@ -242,50 +413,49 @@ class CatetinApp {
 
     this.saveSettings();
     this.applySettings();
-    this.closeSettings();
+    this.modalSettings.close();
+    if (this.state === 'BOOTSTRAPPING') {
+      this.bootstrapSystem();
+    }
   }
 
   initAudioHooks() {
-    // Diagnostic logging & Telemetry bridges
     this.audio.onLog = (cat, msg) => {
-      if (this.telemetry) this.telemetry.log(cat, msg);
+      this.telemetry.log(cat, msg);
     };
 
     this.onnx.onLog = (cat, msg) => {
-      if (this.telemetry) this.telemetry.log(cat, msg);
+      this.telemetry.log(cat, msg);
     };
 
     this.onnx.onTelemetry = (info) => {
-      if (this.telemetry) this.telemetry.updateWhisper(info);
+      this.telemetry.updateWhisper(info);
+    };
+
+    this.onnx.onTransducerStatus = (status, model) => {
+      this.telemetry.updateTransducer(status, model);
     };
 
     this.audio.onVolume = (level) => {
-      if (this.vuMeter) this.vuMeter.setLevel(level);
+      this.vuMeter.setLevel(level);
     };
 
     this.audio.onVadSpeaking = (speaking, rms = 0) => {
-      if (this.statusVad) {
-        if (speaking) {
-          this.statusVad.classList.add('active');
-        } else {
-          this.statusVad.classList.remove('active');
-        }
+      if (speaking) {
+        this.statusVad.classList.add('active');
+      } else {
+        this.statusVad.classList.remove('active');
       }
-      if (this.telemetry) {
-        this.telemetry.updateVad(speaking, rms);
-      }
+      this.telemetry.updateVad(speaking, rms);
     };
 
-    // Real-time live turn indicator in transcript feed
     this.audio.onSpeechProgress = ({ speaker, durationS, rms, closed }) => {
       if (closed) {
         this.transcriptView.clearLiveTurn();
       } else if (!this.transcriptView.hasLiveText) {
         this.transcriptView.setLiveTurn(speaker, durationS);
       }
-      if (this.telemetry) {
-        this.telemetry.updateVad(!closed && durationS > 0, rms);
-      }
+      this.telemetry.updateVad(!closed && durationS > 0, rms);
     };
 
     // Pass 1: Streaming Transducer chunks (< 50ms live captions)
@@ -293,13 +463,8 @@ class CatetinApp {
       this.onnx.feedTransducerChunk(pcm16k, speaker, durationS);
     };
 
-    this.audio.onTurnFinished = (speaker) => {
+    this.audio.onTurnFinished = () => {
       this.onnx.resetTransducer();
-    };
-
-    // Pass 1 Fallback: Streaming interim speech fed to fast decoder if Transducer is disabled
-    this.audio.onInterimSpeech = (pcm16k, speaker, durationS) => {
-      this.onnx.transcribeInterim(pcm16k, speaker, durationS);
     };
 
     this.onnx.onInterimResult = ({ speaker, text, durationS, decodeTimeMs }) => {
@@ -307,10 +472,8 @@ class CatetinApp {
         const clean = text.replace(/\[.*?\]/g, '').trim();
         if (clean) {
           this.transcriptView.setLiveTurn(speaker, durationS, clean);
-          if (this.telemetry) {
-            const ms = typeof decodeTimeMs === 'number' ? ` (${decodeTimeMs.toFixed(1)}ms)` : '';
-            this.telemetry.log('TRANSDUCER', `Live [${speaker}]: "${clean}"${ms}`);
-          }
+          const ms = typeof decodeTimeMs === 'number' ? ` (${decodeTimeMs.toFixed(1)}ms)` : '';
+          this.telemetry.log('TRANSDUCER', `Live [${speaker}]: "${clean}"${ms}`);
         }
       }
     };
@@ -324,47 +487,44 @@ class CatetinApp {
         this.btnTab.classList.remove('active');
       }
 
-      if (this.telemetry) {
-        this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
-      }
+      this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
     };
 
-    // Offloaded to Web Worker: never blocks UI or audio!
     this.audio.onUtteranceReady = async (utterance, speakerLabel) => {
       const timeStr = this._formatTime(new Date());
       const durationS = utterance.length / 16000;
 
-      // Provide immediate visual feedback that final pass is running
       this.transcriptView.setLiveTurn(speakerLabel, durationS, 'Memproses transkrip final...');
 
-      const rawText = await this.onnx.transcribeUtterance(utterance, speakerLabel, timeStr);
-      if (rawText && rawText.trim()) {
-        const cleanedText = this.audio.cleanRepetitiveLoops(rawText);
-        if (this.audio.isHallucination(cleanedText)) {
-          if (this.telemetry) this.telemetry.log('WHISPER', `Filter halusinasi mengabaikan: "${rawText.slice(0, 30)}..."`);
+      try {
+        const rawText = await this.onnx.transcribeUtterance(utterance, speakerLabel, timeStr);
+        if (!rawText || !rawText.trim()) {
           this.transcriptView.clearLiveTurn();
           return;
         }
-        const cleanText = this.audio.formatUtterance(cleanedText) || cleanedText.trim();
-        if (cleanText) {
+
+        const cleanedText = this.audio.cleanRepetitiveLoops(rawText);
+        if (this.audio.isHallucination(cleanedText)) {
+          this.telemetry.log('WHISPER', `Filter halusinasi mengabaikan: "${rawText.slice(0, 30)}..."`);
           this.transcriptView.clearLiveTurn();
+          return;
+        }
+
+        const cleanText = this.audio.formatUtterance(cleanedText);
+        this.transcriptView.clearLiveTurn();
+        if (cleanText) {
           this.transcriptView.addSegment(speakerLabel, cleanText, timeStr);
-          // Hanya proses update catatan jika panel catatan TIDAK disembunyikan
-          if (!this.settings.hideNotes && this.notesView) {
+          if (!this.settings.hideNotes) {
             this.notesView.updateInsights(this.transcriptView.getSegments());
           }
-          if (this.telemetry) {
-            this.telemetry.log('STREAM', `Transkrip dirender [${speakerLabel}]: "${cleanText.slice(0, 50)}..."`);
-          }
-        } else {
-          this.transcriptView.clearLiveTurn();
+          this.telemetry.log('STREAM', `Transkrip dirender [${speakerLabel}]: "${cleanText.slice(0, 50)}..."`);
         }
-      } else {
+      } catch (err) {
         this.transcriptView.clearLiveTurn();
+        this.telemetry.log('ERROR', `Gagal memproses ucapan [${speakerLabel}]: ${err.message}`);
       }
     };
 
-    // Listen to ASR Worker progress/status
     this.onnx.onProgress = (info) => {
       if (this.modelStatusText) {
         this.modelStatusText.className = 'status-info loading';
@@ -386,6 +546,8 @@ class CatetinApp {
         }
       }
     };
+
+    this.telemetry.updateTransducer(this.onnx.transducerStatus, this.onnx.transducerModel);
   }
 
   initHotkeys() {
@@ -407,7 +569,7 @@ class CatetinApp {
 
   async toggleSession() {
     if (!this.isRecording && this.state !== 'SYSTEM_READY') {
-      console.warn("Sistem belum siap, masih dalam tahap bootstrap:", this.state);
+      console.warn('Sistem belum siap, masih dalam tahap bootstrap:', this.state);
       return;
     }
 
@@ -419,25 +581,22 @@ class CatetinApp {
       this.btnSession.classList.remove('active');
       this.btnPause.disabled = true;
       this.transcriptView.clearLiveTurn();
-      if (this.vuMeter) this.vuMeter.reset();
-      if (this.telemetry) {
-        this.telemetry.updateAudio(false, []);
-        this.telemetry.updateVad(false, 0);
-      }
+      this.vuMeter.reset();
+      this.telemetry.updateAudio(false, []);
+      this.telemetry.updateVad(false, 0);
       return;
     }
 
     try {
       await this.audio.startSession();
 
-      // Start mic if desired
       if (this.micWanted) {
         try {
           await this.audio.setMicEnabled(true);
           this.btnMic.textContent = 'Mic: Aktif';
           this.btnMic.classList.remove('muted');
         } catch (micErr) {
-          console.warn("Could not start microphone on session start:", micErr);
+          console.warn('Tidak dapat mengaktifkan mikrofon saat sesi dimulai:', micErr);
           this.btnMic.textContent = 'Mic: Mati';
           this.btnMic.classList.add('muted');
         }
@@ -449,11 +608,9 @@ class CatetinApp {
       this.btnSession.classList.add('active');
       this.btnPause.disabled = false;
 
-      if (this.telemetry) {
-        this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
-      }
+      this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
     } catch (err) {
-      alert("Gagal memulai sesi audio: " + err.message);
+      alert('Gagal memulai sesi audio: ' + err.message);
     }
   }
 
@@ -464,7 +621,7 @@ class CatetinApp {
       try {
         await this.audio.setMicEnabled(this.micWanted);
       } catch (err) {
-        alert("Gagal mengubah mikrofon: " + err.message);
+        alert('Gagal mengubah mikrofon: ' + err.message);
         this.micWanted = false;
       }
     }
@@ -477,21 +634,16 @@ class CatetinApp {
       this.btnMic.classList.add('muted');
     }
 
-    if (this.telemetry) {
-      this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
-    }
+    this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
   }
 
   async addTabAudio() {
     try {
-      const label = await this.audio.addTabAudio();
-      console.log(`[App] Tab audio added: ${label}`);
-      if (this.telemetry) {
-        this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
-      }
+      await this.audio.addTabAudio();
+      this.telemetry.updateAudio(this.audio.micEnabled, Array.from(this.audio.tabStreams.values()));
     } catch (err) {
       if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-        console.warn("Tab audio sharing canceled or failed:", err);
+        console.warn('Pembagian audio tab dibatalkan atau gagal:', err);
       }
     }
   }
@@ -514,7 +666,7 @@ class CatetinApp {
   saveMarkdown() {
     const segments = this.transcriptView.getSegments();
     if (segments.length === 0) {
-      alert("Belum ada transkrip.");
+      alert('Belum ada transkrip.');
       return;
     }
 
@@ -524,13 +676,18 @@ class CatetinApp {
 
     let md = `# Catetin - Notulensi Rapat\n\n`;
     md += `*Tanggal: ${dateStr}*\n\n`;
-    md += `## Ringkasan Eksekutif\n\n`;
 
-    const summaryText = this.notesView.shadowRoot.getElementById('summary-text')?.textContent || '';
-    md += summaryText ? `${summaryText}\n\n` : `*(Belum ada ringkasan)*\n\n`;
+    md += `## Topik Pembahasan\n\n`;
+    const topics = this.notesView.topics || [];
+    if (topics.length > 0) {
+      topics.forEach(t => { md += `- ${t}\n`; });
+      md += '\n';
+    } else {
+      md += `*(Tidak ada topik terdeteksi)*\n\n`;
+    }
 
     md += `## Poin Keputusan & Tindak Lanjut\n\n`;
-    const actionItems = Array.from(this.notesView.shadowRoot.querySelectorAll('.action-item')).map(el => el.textContent);
+    const actionItems = this.notesView.actions || [];
     if (actionItems.length > 0) {
       actionItems.forEach(item => { md += `- [ ] ${item}\n`; });
       md += '\n';
@@ -556,13 +713,11 @@ class CatetinApp {
 
   clearAll() {
     if (this.transcriptView.getSegments().length > 0) {
-      if (!confirm("Hapus seluruh transkrip dan catatan rapat?")) return;
+      if (!confirm('Hapus seluruh transkrip dan catatan rapat?')) return;
     }
     this.transcriptView.clear();
     this.notesView.clear();
-    if (this.telemetry) {
-      this.telemetry.clearLogs();
-    }
+    this.telemetry.clearLogs();
   }
 
   _formatTime(date) {
@@ -571,7 +726,12 @@ class CatetinApp {
   }
 }
 
-// Instantiate PWA
 window.addEventListener('DOMContentLoaded', () => {
   window.app = new CatetinApp();
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch((err) => {
+      console.warn('[SW] Gagal mendaftarkan Service Worker:', err);
+    });
+  }
 });

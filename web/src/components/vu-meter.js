@@ -30,48 +30,71 @@ export class VuMeter extends HTMLElement {
   }
 
   connectedCallback() {
-    this._startRenderLoop();
+    this._draw();
   }
 
   disconnectedCallback() {
-    if (this.animId) cancelAnimationFrame(this.animId);
+    if (this.animId) {
+      cancelAnimationFrame(this.animId);
+      this.animId = null;
+    }
   }
 
   setLevel(level) {
     this.currentLevel = Math.max(0, Math.min(1, level));
+    if (!this.animId && this.currentLevel > 0) {
+      this._startRenderLoop();
+    }
+  }
+
+  _draw() {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    this.ctx.clearRect(0, 0, w, h);
+
+    const count = this.history.length;
+    const barW = (w / count) - 1;
+
+    for (let i = 0; i < count; i++) {
+      const val = this.history[i];
+      const barH = Math.max(2, val * h * 0.95);
+      const x = i * (barW + 1);
+      const y = (h - barH) / 2;
+
+      const hue = 190 + (val * 70); // Cyan to Emerald
+      this.ctx.fillStyle = `hsl(${hue}, 80%, 55%)`;
+      this.ctx.fillRect(x, y, barW, barH);
+    }
   }
 
   reset() {
+    if (this.animId) {
+      cancelAnimationFrame(this.animId);
+      this.animId = null;
+    }
     this.currentLevel = 0;
     this.history.fill(0);
+    this._draw();
   }
 
   _startRenderLoop() {
+    if (this.animId) return;
+
     const loop = () => {
       this.history.push(this.currentLevel);
       if (this.history.length > 24) this.history.shift();
 
-      const w = this.canvas.width;
-      const h = this.canvas.height;
-      this.ctx.clearRect(0, 0, w, h);
+      this._draw();
 
-      const count = this.history.length;
-      const barW = (w / count) - 1;
-
-      for (let i = 0; i < count; i++) {
-        const val = this.history[i];
-        const barH = Math.max(2, val * h * 0.95);
-        const x = i * (barW + 1);
-        const y = (h - barH) / 2;
-
-        const hue = 190 + (val * 70); // Cyan to Emerald
-        this.ctx.fillStyle = `hsl(${hue}, 80%, 55%)`;
-        this.ctx.fillRect(x, y, barW, barH);
+      if (this.currentLevel === 0 && this.history.every(v => v === 0)) {
+        this.animId = null;
+        return;
       }
 
       this.animId = requestAnimationFrame(loop);
     };
-    loop();
+
+    this.animId = requestAnimationFrame(loop);
   }
 }
 

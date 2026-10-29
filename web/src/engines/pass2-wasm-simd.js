@@ -1,7 +1,7 @@
 // engines/pass2-wasm-simd.js - Multi-Threaded WASM SIMD Finalizer Engine (Option C)
 // Executes directly on CPU logical cores with zero driver IPC overhead and zero shader compilation.
 
-import { Pass2Engine } from './pass2-interface.js';
+import { Pass2Engine, resolveWhisperLanguage, loadLocalTransformers } from './pass2-interface.js';
 
 export class Pass2WasmSimdEngine extends Pass2Engine {
   constructor() {
@@ -16,8 +16,7 @@ export class Pass2WasmSimdEngine extends Pass2Engine {
     this.currentModel = modelName;
     this.currentLanguage = language;
 
-    const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3');
-    env.allowLocalModels = false;
+    const { pipeline, env } = await loadLocalTransformers();
 
     this.threads = Math.min(8, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4);
     env.backends.onnx.wasm.numThreads = this.threads;
@@ -42,18 +41,16 @@ export class Pass2WasmSimdEngine extends Pass2Engine {
   }
 
   async warmup() {
-    if (!this.transcriber) return;
-    try {
-      const dummyPcm = new Float32Array(8000);
-      await this.transcriber(dummyPcm, {
-        task: 'transcribe',
-        return_timestamps: false,
-        max_new_tokens: 1,
-        temperature: 0.0
-      });
-    } catch (err) {
-      console.warn("[Pass2WasmSimd] Pre-warming warning:", err);
+    if (!this.transcriber) {
+      throw new Error('Pass2WasmSimd belum diinisialisasi.');
     }
+    const dummyPcm = new Float32Array(8000);
+    await this.transcriber(dummyPcm, {
+      task: 'transcribe',
+      return_timestamps: false,
+      max_new_tokens: 1,
+      temperature: 0.0
+    });
   }
 
   async transcribe(pcm16k, options = {}) {
@@ -61,9 +58,7 @@ export class Pass2WasmSimdEngine extends Pass2Engine {
       throw new Error("Pass2WasmSimd belum diinisialisasi.");
     }
 
-    const lang = options.language || this.currentLanguage;
-    const langMap = { 'id': 'indonesian', 'en': 'english', 'auto': null };
-    const whisperLang = langMap[lang] || (lang === 'auto' ? null : 'indonesian');
+    const whisperLang = resolveWhisperLanguage(options.language || this.currentLanguage);
 
     const decodeOpts = {
       task: 'transcribe',
@@ -86,8 +81,16 @@ export class Pass2WasmSimdEngine extends Pass2Engine {
   }
 
   async dispose() {
-    if (this.transcriber && typeof this.transcriber.dispose === 'function') {
-      try { await this.transcriber.dispose(); } catch {}
+    if (this.transcriber) {
+      try {
+        if (typeof this.transcriber.dispose === 'function') {
+          await this.transcriber.dispose();
+        } else if (this.transcriber.model && typeof this.transcriber.model.dispose === 'function') {
+          await this.transcriber.model.dispose();
+        }
+      } catch (err) {
+        console.warn('[WASM-SIMD] Gagal melepaskan pipeline:', err);
+      }
     }
     this.transcriber = null;
     this.isReady = false;

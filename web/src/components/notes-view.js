@@ -135,7 +135,7 @@ export class NotesView extends HTMLElement {
     if (this.topics.length === 0) {
       topicList.innerHTML = `<li class="empty-note">-</li>`;
     } else {
-      topicList.innerHTML = this.topics.map(t => `<li class="topic-item">${t}</li>`).join('');
+      topicList.innerHTML = this.topics.map(t => `<li class="topic-item">${escapeHtml(t)}</li>`).join('');
     }
 
     if (this.actions.length === 0) {
@@ -144,7 +144,7 @@ export class NotesView extends HTMLElement {
       actionList.innerHTML = this.actions.map(a => `
         <li class="action-item">
           <input type="checkbox">
-          <span>${a}</span>
+          <span>${escapeHtml(a)}</span>
         </li>
       `).join('');
     }
@@ -155,14 +155,15 @@ export class NotesView extends HTMLElement {
     this.actions = [];
     this._render();
   }
+}
 
-  getTopics() {
-    return this.topics;
-  }
-
-  getActions() {
-    return this.actions;
-  }
+function escapeHtml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 customElements.define('notes-view', NotesView);

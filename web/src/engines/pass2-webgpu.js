@@ -1,7 +1,7 @@
 // engines/pass2-webgpu.js - WebGPU Accelerated Finalizer Engine (Option A)
 // Leverages GPU compute shaders for parallel execution with fast WebGPU Mel extraction & PSO pre-warming.
 
-import { Pass2Engine } from './pass2-interface.js';
+import { Pass2Engine, resolveWhisperLanguage, loadLocalTransformers } from './pass2-interface.js';
 import { WebGpuMelExtractor } from './mel-spectrogram.js';
 
 export class Pass2WebGpuEngine extends Pass2Engine {
@@ -22,8 +22,7 @@ export class Pass2WebGpuEngine extends Pass2Engine {
     this.currentModel = modelName;
     this.currentLanguage = language;
 
-    const { pipeline, env, Tensor } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3');
-    env.allowLocalModels = false;
+    const { pipeline, Tensor } = await loadLocalTransformers();
     this.TensorClass = Tensor;
 
     this.transcriber = await pipeline('automatic-speech-recognition', modelName, {
@@ -51,25 +50,21 @@ export class Pass2WebGpuEngine extends Pass2Engine {
   }
 
   async warmup() {
-    if (!this.transcriber) return;
-    try {
-      // Dummy pass 0.5s audio nol untuk memaksa kompilasi Pipeline State Objects (PSO) di driver
-      const dummyPcm = new Float32Array(8000);
-      if (this.melExtractor) {
-        await this.melExtractor.extract(dummyPcm);
-      }
-      if (this.TensorClass && this.transcriber.model) {
-        const dummyFeatures = new this.TensorClass('float32', new Float32Array(80 * 3000), [1, 80, 3000]);
-        await this.transcriber.model.generate({
-          input_features: dummyFeatures,
-          max_new_tokens: 1,
-          temperature: 0.0,
-          task: 'transcribe'
-        });
-      }
-    } catch (err) {
-      console.warn("[Pass2WebGPU] Pre-warming warning:", err);
+    if (!this.transcriber || !this.melExtractor || !this.TensorClass || !this.transcriber.model) {
+      throw new Error('Pass2WebGPU belum terinisialisasi lengkap untuk warmup.');
     }
+
+    // Dummy pass 0.5s audio nol untuk memaksa kompilasi Pipeline State Objects (PSO) di driver
+    const dummyPcm = new Float32Array(8000);
+    await this.melExtractor.extract(dummyPcm);
+
+    const dummyFeatures = new this.TensorClass('float32', new Float32Array(80 * 3000), [1, 80, 3000]);
+    await this.transcriber.model.generate({
+      input_features: dummyFeatures,
+      max_new_tokens: 1,
+      temperature: 0.0,
+      task: 'transcribe'
+    });
   }
 
   async transcribe(pcm16k, options = {}) {
@@ -77,53 +72,36 @@ export class Pass2WebGpuEngine extends Pass2Engine {
       throw new Error("Pass2WebGPU belum diinisialisasi.");
     }
 
-    const lang = options.language || this.currentLanguage;
-    const langMap = { 'id': 'indonesian', 'en': 'english', 'auto': null };
-    const whisperLang = langMap[lang] || (lang === 'auto' ? null : 'indonesian');
+    if (!this.melExtractor || !this.TensorClass || !this.transcriber.model) {
+      throw new Error('Pass2WebGPU: komponen WebGPU Mel/Model tidak siap.');
+    }
+
+    const whisperLang = resolveWhisperLanguage(options.language || this.currentLanguage);
 
     const start = performance.now();
-    let text = '';
-    let melLatencyMs = 0;
-    let modelLatencyMs = 0;
 
-    if (this.melExtractor && this.TensorClass && this.transcriber.model) {
-      // FAST PATH: WebGPU Mel Extraction (< 25 ms) bypassing slow processor(pcm) (~1.121 ms)
-      const t0Mel = performance.now();
-      const { data } = await this.melExtractor.extract(pcm16k);
-      melLatencyMs = Math.round(performance.now() - t0Mel);
+    // FAST PATH: WebGPU Mel Extraction (< 25 ms) bypassing slow processor(pcm) (~1.121 ms)
+    const t0Mel = performance.now();
+    const { data } = await this.melExtractor.extract(pcm16k);
+    const melLatencyMs = Math.round(performance.now() - t0Mel);
 
-      const inputFeaturesTensor = new this.TensorClass('float32', data, [1, 80, 3000]);
+    const inputFeaturesTensor = new this.TensorClass('float32', data, [1, 80, 3000]);
 
-      const genOpts = {
-        input_features: inputFeaturesTensor,
-        max_new_tokens: options.maxNewTokens || 64,
-        num_beams: 1,
-        temperature: 0.0,
-        task: 'transcribe'
-      };
-      if (whisperLang) genOpts.language = whisperLang;
+    const genOpts = {
+      input_features: inputFeaturesTensor,
+      max_new_tokens: options.maxNewTokens || 64,
+      num_beams: 1,
+      temperature: 0.0,
+      task: 'transcribe'
+    };
+    if (whisperLang) genOpts.language = whisperLang;
 
-      const t0Model = performance.now();
-      const outputTokens = await this.transcriber.model.generate(genOpts);
-      modelLatencyMs = Math.round(performance.now() - t0Model);
+    const t0Model = performance.now();
+    const outputTokens = await this.transcriber.model.generate(genOpts);
+    const modelLatencyMs = Math.round(performance.now() - t0Model);
 
-      const decoded = this.transcriber.tokenizer.batch_decode(outputTokens, { skip_special_tokens: true });
-      text = (decoded && decoded[0]) ? decoded[0].trim() : '';
-    } else {
-      // Fallback path
-      const decodeOpts = {
-        task: 'transcribe',
-        return_timestamps: false,
-        max_new_tokens: options.maxNewTokens || 64,
-        num_beams: 1,
-        temperature: 0.0,
-        chunk_length_s: 0
-      };
-      if (whisperLang) decodeOpts.language = whisperLang;
-
-      const output = await this.transcriber(pcm16k, decodeOpts);
-      text = (output && output.text) ? output.text.trim() : '';
-    }
+    const decoded = this.transcriber.tokenizer.batch_decode(outputTokens, { skip_special_tokens: true });
+    const text = (decoded && decoded[0]) ? decoded[0].trim() : '';
 
     const latencyMs = Math.round(performance.now() - start);
 
@@ -139,6 +117,17 @@ export class Pass2WebGpuEngine extends Pass2Engine {
     if (this.melExtractor) {
       this.melExtractor.dispose();
       this.melExtractor = null;
+    }
+    if (this.transcriber) {
+      try {
+        if (typeof this.transcriber.dispose === 'function') {
+          await this.transcriber.dispose();
+        } else if (this.transcriber.model && typeof this.transcriber.model.dispose === 'function') {
+          await this.transcriber.model.dispose();
+        }
+      } catch (err) {
+        console.error('[Pass2WebGPU] dispose error:', err);
+      }
     }
     this.transcriber = null;
     this.TensorClass = null;

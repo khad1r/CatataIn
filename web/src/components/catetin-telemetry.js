@@ -24,10 +24,10 @@ export class CatetinTelemetry extends HTMLElement {
       gpuDevice: '...',
       vramLimitMB: 0,
       heapUsedMB: '0.0',
-      sysRamGB: typeof navigator !== 'undefined' && navigator.deviceMemory ? `${navigator.deviceMemory}GB` : '16GB',
+      sysRamGB: typeof navigator !== 'undefined' && navigator.deviceMemory ? `${navigator.deviceMemory}GB` : 'Tidak diketahui',
       heapLimitMB: '0',
       audioCtxState: 'suspended',
-      audioCtxSampleRate: 48000,
+      audioCtxSampleRate: 0,
       wasmMemoryMB: '0.0'
     };
 
@@ -45,7 +45,7 @@ export class CatetinTelemetry extends HTMLElement {
       lastRtf: '0.00',
       lastText: '',
       transducerStatus: 'idle',
-      transducerModel: 'Zipformer ID',
+      transducerModel: 'id',
       transducerFrames: 0,
       totalInferences: 0,
       avgLatencyMs: 0,
@@ -70,24 +70,28 @@ export class CatetinTelemetry extends HTMLElement {
           } else if (adapter.info) {
             info = adapter.info;
           }
-          this.hw.gpuVendor = info.vendor || 'intel';
-          this.hw.gpuArch = info.architecture || 'gen-9';
-          this.hw.gpuDevice = info.device || 'Integrated Graphics';
+          this.hw.gpuVendor = info.vendor || 'Tidak diketahui';
+          this.hw.gpuArch = info.architecture || '-';
+          this.hw.gpuDevice = info.device || '-';
 
           // Extract VRAM limit from WebGPU limits
           if (adapter.limits && adapter.limits.maxBufferSize) {
             this.hw.vramLimitMB = Math.round(adapter.limits.maxBufferSize / 1048576);
           }
+        } else {
+          this.hw.gpuAvailable = false;
+          this.hw.gpuVendor = 'Tidak tersedia';
+          this.hw.gpuArch = '-';
         }
       } catch (err) {
         this.hw.gpuAvailable = false;
-        this.hw.gpuVendor = 'Fallback CPU';
-        this.hw.gpuArch = 'WASM SIMD';
+        this.hw.gpuVendor = 'Tidak tersedia';
+        this.hw.gpuArch = '-';
       }
     } else {
       this.hw.gpuAvailable = false;
-      this.hw.gpuVendor = 'None';
-      this.hw.gpuArch = 'WASM SIMD';
+      this.hw.gpuVendor = 'Tidak tersedia';
+      this.hw.gpuArch = '-';
     }
 
     this._updateHwDisplays();
@@ -489,7 +493,6 @@ export class CatetinTelemetry extends HTMLElement {
             <div class="stack-card">
               <div class="stack-title">
                 <span>Thread 0: UI Main Thread</span>
-                <span class="badge badge-vad-speaking">60 FPS</span>
               </div>
               <div class="stack-row">
                 <span class="stack-label">Fungsi:</span>
@@ -509,19 +512,19 @@ export class CatetinTelemetry extends HTMLElement {
             <div class="stack-card">
               <div class="stack-title">
                 <span>Thread 1: WebAudio & Rust WASM</span>
-                <span id="st-audio-state" class="badge badge-vad-speaking">RUNNING</span>
+                <span id="st-audio-state" class="badge badge-vad-idle">SUSPENDED</span>
               </div>
               <div class="stack-row">
                 <span class="stack-label">AudioContext:</span>
-                <span id="st-sample-rate" class="stack-val">${this.hw.audioCtxSampleRate} Hz (ScriptProcessor 4096)</span>
+                <span id="st-sample-rate" class="stack-val">${this.hw.audioCtxSampleRate ? this.hw.audioCtxSampleRate + ' Hz' : '-'}</span>
               </div>
               <div class="stack-row">
                 <span class="stack-label">catetin.wasm DSP:</span>
-                <span class="stack-val">Hann Resampler (48k->16k), SpeechSegmenter</span>
+                <span id="st-dsp-info" class="stack-val">Hann Resampler (${this.hw.audioCtxSampleRate ? (this.hw.audioCtxSampleRate / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : 'Native'}->16k), SpeechSegmenter</span>
               </div>
               <div class="stack-row">
                 <span class="stack-label">WASM Heap:</span>
-                <span id="st-wasm-mem" class="stack-val">${this.hw.wasmMemoryMB} MB (Zero-Import C-ABI)</span>
+                <span id="st-wasm-mem" class="stack-val">${this.hw.wasmMemoryMB} MB</span>
               </div>
             </div>
 
@@ -553,7 +556,7 @@ export class CatetinTelemetry extends HTMLElement {
             <div class="stack-card">
               <div class="stack-title">
                 <span>Thread 3: Pass 1 Transducer Worker</span>
-                <span id="st-transducer-status" class="badge badge-vad-speaking">&lt; 50ms SIMD</span>
+                <span id="st-transducer-status" class="badge badge-status-idle">IDLE</span>
               </div>
               <div class="stack-row">
                 <span class="stack-label">Engine:</span>
@@ -561,7 +564,7 @@ export class CatetinTelemetry extends HTMLElement {
               </div>
               <div class="stack-row">
                 <span class="stack-label">Model:</span>
-                <span class="stack-val" style="color:#f472b6;">Zipformer2 ID / EN (WASM SIMD)</span>
+                <span id="st-transducer-model" class="stack-val" style="color:#f472b6;">Zipformer2 ID (WASM SIMD)</span>
               </div>
               <div class="stack-row">
                 <span class="stack-label">Input Audio:</span>
@@ -611,10 +614,13 @@ export class CatetinTelemetry extends HTMLElement {
     this.stHeap = this.shadowRoot.getElementById('st-heap');
     this.stAudioState = this.shadowRoot.getElementById('st-audio-state');
     this.stSampleRate = this.shadowRoot.getElementById('st-sample-rate');
+    this.stDspInfo = this.shadowRoot.getElementById('st-dsp-info');
     this.stWasmMem = this.shadowRoot.getElementById('st-wasm-mem');
     this.stWorkerStatus = this.shadowRoot.getElementById('st-worker-status');
     this.stGpuInfo = this.shadowRoot.getElementById('st-gpu-info');
     this.stWhisperModel = this.shadowRoot.getElementById('st-whisper-model');
+    this.stTransducerStatus = this.shadowRoot.getElementById('st-transducer-status');
+    this.stTransducerModel = this.shadowRoot.getElementById('st-transducer-model');
 
     // Event listeners
     this.btnToggleLog.addEventListener('click', () => {
@@ -723,8 +729,14 @@ export class CatetinTelemetry extends HTMLElement {
       this.stAudioState.textContent = (this.hw.audioCtxState || 'suspended').toUpperCase();
       this.stAudioState.className = this.hw.audioCtxState === 'running' ? 'badge badge-vad-speaking' : 'badge badge-vad-idle';
     }
-    if (this.stSampleRate) this.stSampleRate.textContent = `${this.hw.audioCtxSampleRate} Hz (ScriptProcessor 4096)`;
-    if (this.stWasmMem) this.stWasmMem.textContent = `${this.hw.wasmMemoryMB} MB (Zero-Import C-ABI)`;
+    if (this.stSampleRate) this.stSampleRate.textContent = `${this.hw.audioCtxSampleRate ? this.hw.audioCtxSampleRate + ' Hz' : '-'}`;
+    if (this.stDspInfo) {
+      const rateK = this.hw.audioCtxSampleRate
+        ? `${(this.hw.audioCtxSampleRate / 1000).toFixed(1).replace(/\.0$/, '')}k`
+        : 'Native';
+      this.stDspInfo.textContent = `Hann Resampler (${rateK}->16k), SpeechSegmenter`;
+    }
+    if (this.stWasmMem) this.stWasmMem.textContent = `${this.hw.wasmMemoryMB} MB`;
     if (this.stGpuInfo) this.stGpuInfo.textContent = `${this.hw.gpuVendor} (${this.hw.gpuArch})`;
   }
 
@@ -738,8 +750,28 @@ export class CatetinTelemetry extends HTMLElement {
 
     this.btnToggleLog.textContent = `Log (${this.logs.length}) ${this.isDrawerOpen && this.activeTab === 'logs' ? '▴' : '▾'}`;
 
-    if (this.activeTab === 'logs') {
-      this.renderLogFeed();
+    if (this.viewLogs && (this.activeFilter === 'ALL' || this.activeFilter === category)) {
+      const emptyEl = this.viewLogs.querySelector('.empty-logs');
+      if (emptyEl) {
+        emptyEl.remove();
+      }
+
+      const row = document.createElement('div');
+      row.className = 'log-row';
+      row.innerHTML = `
+        <span class="log-time">${entry.time}</span>
+        <span class="log-cat cat-${entry.category}">[${entry.category}]</span>
+        <span class="log-msg">${escapeHtml(entry.message)}</span>
+      `;
+      this.viewLogs.appendChild(row);
+
+      if (this.viewLogs.children.length > this.maxLogs) {
+        this.viewLogs.firstElementChild?.remove();
+      }
+
+      if (this.activeTab === 'logs' && this.isDrawerOpen) {
+        this.scrollToBottom();
+      }
     }
   }
 
@@ -753,7 +785,7 @@ export class CatetinTelemetry extends HTMLElement {
     const text = this.logs
       .map(l => `[${l.time}] [${l.category}] ${l.message}`)
       .join('\n');
-    navigator.clipboard.writeText(text).catch(() => {});
+    navigator.clipboard.writeText(text).catch(err => console.error('[Telemetry] Gagal menyalin log:', err));
   }
 
   renderLogFeed() {
@@ -815,6 +847,32 @@ export class CatetinTelemetry extends HTMLElement {
         ? `Tab: ${tabCount} (${tabStreams.map(t => t.label).join(', ')})`
         : 'Tab: 0';
       this.valAudio.textContent = `${micStr} | ${tabStr}`;
+    }
+  }
+
+  updateTransducer(status, model) {
+    if (status) this.state.transducerStatus = status;
+    if (model) this.state.transducerModel = model;
+
+    if (this.stTransducerStatus) {
+      const s = this.state.transducerStatus || 'idle';
+      this.stTransducerStatus.textContent = s.toUpperCase();
+      if (s === 'ready') {
+        this.stTransducerStatus.className = 'badge badge-status-ready';
+      } else if (s === 'loading') {
+        this.stTransducerStatus.className = 'badge badge-status-loading';
+      } else if (s === 'error') {
+        this.stTransducerStatus.className = 'badge badge-status-error';
+      } else {
+        this.stTransducerStatus.className = 'badge badge-status-idle';
+      }
+    }
+
+    if (this.stTransducerModel) {
+      const m = this.state.transducerModel;
+      this.stTransducerModel.textContent = m === 'none'
+        ? 'Nonaktif'
+        : `Zipformer2 ${String(m).toUpperCase()} (WASM SIMD)`;
     }
   }
 

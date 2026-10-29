@@ -75,11 +75,6 @@ header {
   border: 1px solid #047857;
 }
 
-.btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
 .controls {
   display: flex;
   align-items: center;
@@ -269,6 +264,64 @@ dialog.modal::backdrop {
 .modal-footer {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   padding: 10px 16px;
   border-top: 1px solid #282828;
+}
+
+.onboarding-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #38bdf8;
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #38bdf8;
+  animation: hw-pulse 1s infinite ease-in-out;
+}
+
+@keyframes hw-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.hw-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.hw-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  background-color: #222;
+  border: 1px solid #303030;
+  border-radius: 4px;
+}
+
+.hw-recommend {
+  padding: 8px 10px;
+  background-color: #064e3b;
+  border: 1px solid #047857;
+  border-radius: 4px;
+  color: #34d399;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.hw-warn {
+  padding: 6px 10px;
+  background-color: #451a03;
+  border: 1px solid #78350f;
+  border-radius: 4px;
+  color: #fbbf24;
+  font-size: 0.78rem;
 }

@@ -107,6 +107,7 @@
 
     async function loadWavAudio(url) {
       const res = await fetch(url);
+      if (!res.ok) throw new Error(`Gagal memuat sampel audio (${res.status}): ${url}`);
       const arrayBuf = await res.arrayBuffer();
       const view = new DataView(arrayBuf);
       
@@ -133,7 +134,7 @@
 
     async function runPass1Transducer(audioData) {
       log('\n[PASS 1] Inisialisasi Sherpa-ONNX Zipformer2 ID Streaming Worker...');
-      const worker = new Worker('/src/sherpa/sherpa-transducer-worker.js');
+      const worker = new Worker('./src/sherpa/sherpa-transducer-worker.js');
       
       await new Promise((resolve, reject) => {
         worker.onmessage = (e) => {
@@ -211,6 +212,14 @@
     }
 
     async function runPass2Engine(engineInstance, modelName, audioData, engineLabel) {
+      if (engineInstance.available === false) {
+        log(`\n[PASS 2: ${engineLabel}] ⏭️ Dilewati (engine belum tersedia).`);
+        return {
+          status: 'skipped',
+          deviceType: engineInstance.deviceType,
+          error: 'Belum tersedia'
+        };
+      }
       log(`\n[PASS 2: ${engineLabel}] Inisialisasi & Pre-warming (${modelName})...`);
       const tInit0 = performance.now();
       try {
@@ -248,10 +257,10 @@
 
     window.runFullBenchmark = async function() {
       logEl.textContent = 'Memulai pengujian performa keseluruhan Catetin...\n';
-      const audioUrl = '/sample-indonesia-16k.wav';
+      const audioUrl = './sample-indonesia-16k.wav';
       const audioData = await loadWavAudio(audioUrl);
       document.getElementById('audio-info').innerHTML = `
-        <strong>Berkas:</strong> /sample-indonesia-16k.wav | 
+        <strong>Berkas:</strong> ./sample-indonesia-16k.wav | 
         <strong>Durasi:</strong> ${audioData.durationS.toFixed(2)} detik | 
         <strong>Format:</strong> ${audioData.sampleRate} Hz, 16-bit Mono (${audioData.float32.length} sampel)
       `;
@@ -293,6 +302,7 @@
       results.pass2_wasm_ggml = await runPass2Engine(wasmGgmlEngine, 'Xenova/whisper-tiny', audioData, 'whisper.cpp GGML WASM');
 
       // Render Table
+      const fmtDecode = (r) => r.status === 'success' ? r.decodeTimeMs.toFixed(0) + ' ms' : (r.status === 'skipped' ? 'Dilewati' : 'Gagal');
       const tbody = document.getElementById('results-tbody');
       tbody.innerHTML = `
         <tr>
@@ -309,7 +319,7 @@
           <td>WebGPU (GPU Compute)</td>
           <td>Whisper Tiny (ID)</td>
           <td>${results.pass2_webgpu.status === 'success' ? results.pass2_webgpu.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
-          <td>${results.pass2_webgpu.status === 'success' ? results.pass2_webgpu.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${fmtDecode(results.pass2_webgpu)}</td>
           <td>${results.pass2_webgpu.status === 'success' ? '<strong>' + results.pass2_webgpu.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
           <td>${results.pass2_webgpu.status === 'success' ? '"' + results.pass2_webgpu.text + '"' : results.pass2_webgpu.error}</td>
         </tr>
@@ -318,7 +328,7 @@
           <td>WASM SIMD (${navigator.hardwareConcurrency || 4} Threads CPU)</td>
           <td>Whisper Tiny (ID)</td>
           <td>${results.pass2_wasm_simd.status === 'success' ? results.pass2_wasm_simd.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
-          <td>${results.pass2_wasm_simd.status === 'success' ? results.pass2_wasm_simd.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${fmtDecode(results.pass2_wasm_simd)}</td>
           <td>${results.pass2_wasm_simd.status === 'success' ? '<strong>' + results.pass2_wasm_simd.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
           <td>${results.pass2_wasm_simd.status === 'success' ? '"' + results.pass2_wasm_simd.text + '"' : results.pass2_wasm_simd.error}</td>
         </tr>
@@ -327,7 +337,7 @@
           <td>${results.pass2_webnn.deviceType || 'WebNN (OS DirectML)'}</td>
           <td>Whisper Tiny (ID)</td>
           <td>${results.pass2_webnn.status === 'success' ? results.pass2_webnn.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
-          <td>${results.pass2_webnn.status === 'success' ? results.pass2_webnn.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${fmtDecode(results.pass2_webnn)}</td>
           <td>${results.pass2_webnn.status === 'success' ? '<strong>' + results.pass2_webnn.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
           <td>${results.pass2_webnn.status === 'success' ? '"' + results.pass2_webnn.text + '"' : results.pass2_webnn.error}</td>
         </tr>
@@ -336,7 +346,7 @@
           <td>${results.pass2_direct_ort.deviceType || 'Direct ORT (Split-Dtype)'}</td>
           <td>Whisper Tiny (ID)</td>
           <td>${results.pass2_direct_ort.status === 'success' ? results.pass2_direct_ort.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
-          <td>${results.pass2_direct_ort.status === 'success' ? results.pass2_direct_ort.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${fmtDecode(results.pass2_direct_ort)}</td>
           <td>${results.pass2_direct_ort.status === 'success' ? '<strong>' + results.pass2_direct_ort.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
           <td>${results.pass2_direct_ort.status === 'success' ? '"' + results.pass2_direct_ort.text + '"' : results.pass2_direct_ort.error}</td>
         </tr>
@@ -345,7 +355,7 @@
           <td>${results.pass2_wasm_ggml.deviceType || 'whisper.cpp GGML (CPU)'}</td>
           <td>Whisper Tiny (ID)</td>
           <td>${results.pass2_wasm_ggml.status === 'success' ? results.pass2_wasm_ggml.initTimeMs.toFixed(0) + ' ms' : 'N/A'}</td>
-          <td>${results.pass2_wasm_ggml.status === 'success' ? results.pass2_wasm_ggml.decodeTimeMs.toFixed(0) + ' ms' : 'Gagal'}</td>
+          <td>${fmtDecode(results.pass2_wasm_ggml)}</td>
           <td>${results.pass2_wasm_ggml.status === 'success' ? '<strong>' + results.pass2_wasm_ggml.rtf.toFixed(3) + 'x</strong>' : 'N/A'}</td>
           <td>${results.pass2_wasm_ggml.status === 'success' ? '"' + results.pass2_wasm_ggml.text + '"' : results.pass2_wasm_ggml.error}</td>
         </tr>

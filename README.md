@@ -195,6 +195,14 @@ Dengan implementasi [`web/src/engines/mel-spectrogram.js`](file:///C:/Users/abdk
 
 ---
 
+## Dependensi eksperimental (tingkat watch)
+
+| Dependensi | Dipakai di | Watch | Risikonya | URL yang di-watch |
+| :--- | :--- | :---: | :--- | :--- |
+| WebNN (`navigator.ml`) | `pass2-webnn.js` | 🔴 Sangat tinggi | Butuh flag browser, spesifikasi W3C masih berubah, dan `createContext` untuk NPU belum stabil. Adapter saat ini membuat `MLContext` tetapi inferensi tetap lewat `device: 'webgpu'` (bukan graf WebNN), jadi WebNN belum benar-benar dipakai. | [Spesifikasi W3C](https://www.w3.org/TR/webnn/) · [Status implementasi](https://webmachinelearning.github.io/webnn-status/) · [Repo spesifikasi](https://github.com/webmachinelearning/webnn) · [Chrome Platform Status](https://chromestatus.com/features#webnn) |
+| Transformers.js v3 (CDN, pin 3.3.3) | semua adapter | 🔴 Tinggi | Satu titik gagal (SPOF) untuk semua engine. Perilaku `generate()`, nama dtype, dan `StaticCache` berubah antar rilis minor. Versi v4 sudah beredar dan API-nya bisa berubah. | [Releases](https://github.com/huggingface/transformers.js/releases) · [npm](https://www.npmjs.com/package/@huggingface/transformers) · [Changelog/Issues](https://github.com/huggingface/transformers.js/issues) |
+| ONNX Runtime Web (transitif) | semua adapter | 🔴 Tinggi | Versinya terkunci oleh Transformers.js. Kernel WebGPU (`MatMulNBits`, q4) serta perilaku `numThreads` dan SIMD berubah antar rilis. | [Releases](https://github.com/microsoft/onnxruntime/releases) · [npm](https://www.npmjs.com/package/onnxruntime-web) · [Dokumen WebGPU EP](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html) |
+
 ## Panduan Menjalankan Proyek
 
 ### 1. Menjalankan Server Web PWA Lokal

@@ -6,6 +6,7 @@ export class TranscriptView extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this.segments = [];
+    this.hasLiveText = false;
 
     const style = document.createElement('style');
     style.textContent = `
@@ -103,16 +104,18 @@ export class TranscriptView extends HTMLElement {
 
     this.shadowRoot.appendChild(style);
 
-    this.container = document.createElement('div');
-    this.container.style.display = 'contents';
-
     const header = document.createElement('div');
     header.className = 'header';
     header.textContent = 'Transkrip';
 
     this.liveBar = document.createElement('div');
     this.liveBar.className = 'live-bar';
-    this.liveBar.innerHTML = `<span class="live-text"></span>`;
+
+    this.liveTagEl = document.createElement('span');
+    this.liveTextEl = document.createElement('span');
+    this.liveDurEl = document.createElement('span');
+    this.liveDurEl.className = 'live-dur';
+    this.liveBar.append(this.liveTagEl, this.liveTextEl, this.liveDurEl);
 
     this.feed = document.createElement('div');
     this.feed.className = 'feed';
@@ -129,20 +132,18 @@ export class TranscriptView extends HTMLElement {
     const tag = `[${speaker}]`;
     const durStr = durationS > 0 ? ` [${durationS.toFixed(1)}s]` : '';
 
+    this.liveTagEl.className = `${spkClass} live-tag`;
+    this.liveTagEl.textContent = tag;
+    this.liveDurEl.textContent = durStr;
+
     if (partialText && partialText.trim()) {
       this.hasLiveText = true;
-      this.liveBar.innerHTML = `
-        <span class="${spkClass} live-tag">${tag}</span>
-        <span class="live-text">"${escapeHtml(partialText.trim())}"</span>
-        <span class="live-dur">${durStr}</span>
-      `;
+      this.liveTextEl.className = 'live-text';
+      this.liveTextEl.textContent = `"${partialText.trim()}"`;
     } else {
       this.hasLiveText = false;
-      this.liveBar.innerHTML = `
-        <span class="${spkClass} live-tag">${tag}</span>
-        <span class="live-text live-pulse">Mendengarkan...</span>
-        <span class="live-dur">${durStr}</span>
-      `;
+      this.liveTextEl.className = 'live-text live-pulse';
+      this.liveTextEl.textContent = 'Mendengarkan...';
     }
     this.liveBar.style.display = 'flex';
   }
@@ -150,15 +151,9 @@ export class TranscriptView extends HTMLElement {
   clearLiveTurn() {
     this.hasLiveText = false;
     this.liveBar.style.display = 'none';
-    this.liveBar.innerHTML = `<span class="live-text"></span>`;
-  }
-
-  setLiveText(text) {
-    if (!text || !text.trim()) {
-      this.clearLiveTurn();
-    } else {
-      this.setLiveTurn('Live', 0, text);
-    }
+    this.liveTagEl.textContent = '';
+    this.liveTextEl.textContent = '';
+    this.liveDurEl.textContent = '';
   }
 
   addSegment(speaker, text, timeStr) {
@@ -173,10 +168,12 @@ export class TranscriptView extends HTMLElement {
     const isYou = speaker.toLowerCase().includes('anda') || speaker.toLowerCase().includes('you');
     const spkClass = isYou ? 'spk-you' : 'spk-remote';
 
+    const nearBottom = (this.feed.scrollHeight - this.feed.scrollTop - this.feed.clientHeight) <= 48;
+
     turn.innerHTML = `
       <div class="turn-meta">
-        <span class="time">${timeStr}</span>
-        <span class="${spkClass}">[${speaker}]</span>
+        <span class="time">${escapeHtml(timeStr)}</span>
+        <span class="${spkClass}">[${escapeHtml(speaker)}]</span>
       </div>
       <div class="turn-text">${escapeHtml(text)}</div>
     `;
@@ -184,8 +181,9 @@ export class TranscriptView extends HTMLElement {
     this.feed.appendChild(turn);
     this.segments.push({ speaker, text, time: timeStr });
 
-    // Auto-scroll to bottom
-    this.feed.scrollTop = this.feed.scrollHeight;
+    if (nearBottom) {
+      this.feed.scrollTop = this.feed.scrollHeight;
+    }
   }
 
   clear() {
@@ -196,13 +194,6 @@ export class TranscriptView extends HTMLElement {
 
   getSegments() {
     return this.segments;
-  }
-
-  getMarkdown() {
-    if (this.segments.length === 0) return '';
-    return this.segments
-      .map(s => `${s.time} [${s.speaker}]: ${s.text}`)
-      .join('\n\n');
   }
 }
 
